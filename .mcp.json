@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "nexus-context": {
+      "type": "url",
+      "url": "https://nexus-claude-d2uld2po7-bcumiskeys-projects.vercel.app/api/mcp",
+      "headers": {
+        "Authorization": "Bearer nxs_d0f8bacfd335ad5bd8f0efb913174d0effd6429350427b07"
+      }
+    }
+  }
+}
