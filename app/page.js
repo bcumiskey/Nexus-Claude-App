@@ -1,0 +1,992 @@
+"use client";
+
+import { useState, useEffect, useRef, useCallback } from "react";
+
+// ── API helpers ──
+
+async function fetchJSON(path, opts = {}) {
+  const res = await fetch(`/api${path}`, {
+    headers: { "Content-Type": "application/json", ...opts.headers },
+    ...opts,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+function streamMessage(chatId, content, opts, onText, onDone, onError) {
+  const controller = new AbortController();
+  (async () => {
+    try {
+      const res = await fetch(`/api/chat/${chatId}/send`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content, model: opts.model, enhanced: opts.enhanced || false }),
+        signal: controller.signal,
+      });
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const data = JSON.parse(line.slice(6));
+            if (data.type === "text") onText(data.text);
+            else if (data.type === "done") onDone(data);
+            else if (data.type === "error") onError(new Error(data.error));
+          } catch { /* skip */ }
+        }
+      }
+    } catch (err) {
+      if (err.name !== "AbortError") onError(err);
+    }
+  })();
+  return () => controller.abort();
+}
+
+// ── Format helpers ──
+
+function formatCost(usd) {
+  if (!usd || usd === 0) return "$0.00";
+  if (usd < 0.01) return `$${usd.toFixed(4)}`;
+  return `$${usd.toFixed(2)}`;
+}
+
+function formatTime(ms) {
+  if (!ms) return "";
+  return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+}
+
+function renderMarkdown(text) {
+  if (!text) return "";
+  // Code blocks
+  let html = text.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+    return `<pre><code class="${lang}">${escapeHtml(code.trim())}</code></pre>`;
+  });
+  // Inline code
+  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+  // Bold
+  html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  // Italic
+  html = html.replace(/\*(.+?)\*/g, "<em>$1</em>");
+  // Line breaks
+  html = html.replace(/\n/g, "<br>");
+  return html;
+}
+
+function escapeHtml(str) {
+  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// ── Main Component ──
+
+export default function NexusChat() {
+  // State
+  const [models, setModels] = useState([]);
+  const [selectedModel, setSelectedModel] = useState("");
+  const [chats, setChats] = useState([]);
+  const [activeChat, setActiveChat] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState("");
+  const [streaming, setStreaming] = useState(false);
+  const [streamText, setStreamText] = useState("");
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [projects, setProjects] = useState([]);
+  const [selectedProject, setSelectedProject] = useState(null);
+  const [enhanceMode, setEnhanceMode] = useState(false);
+  const [enhanceResult, setEnhanceResult] = useState(null);
+  const [enhancing, setEnhancing] = useState(false);
+  const [error, setError] = useState(null);
+
+  const endRef = useRef(null);
+  const taRef = useRef(null);
+  const abortRef = useRef(null);
+
+  // ── Load initial data ──
+  useEffect(() => {
+    loadModels();
+    loadChats();
+    loadProjects();
+  }, []);
+
+  // ── Auto-scroll ──
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, streamText]);
+
+  // ── Auto-resize textarea ──
+  useEffect(() => {
+    if (taRef.current) {
+      taRef.current.style.height = "auto";
+      taRef.current.style.height = Math.min(taRef.current.scrollHeight, 200) + "px";
+    }
+  }, [input]);
+
+  // ── Data loaders ──
+  async function loadModels() {
+    try {
+      const data = await fetchJSON("/models");
+      setModels(data);
+      const defaultModel = data.find((m) => m.is_default) || data[0];
+      if (defaultModel) setSelectedModel(defaultModel.id);
+    } catch (err) {
+      setError("Failed to load models: " + err.message);
+    }
+  }
+
+  async function loadChats() {
+    try {
+      const data = await fetchJSON("/chat");
+      setChats(data);
+    } catch (err) {
+      console.error("Failed to load chats:", err);
+    }
+  }
+
+  async function loadProjects() {
+    try {
+      const data = await fetchJSON("/project");
+      setProjects(data);
+    } catch (err) {
+      console.error("Failed to load projects:", err);
+    }
+  }
+
+  async function loadChat(id) {
+    try {
+      const data = await fetchJSON(`/chat/${id}`);
+      setActiveChat(data);
+      setMessages(data.messages || []);
+      setSelectedModel(data.model_id);
+    } catch (err) {
+      setError("Failed to load chat: " + err.message);
+    }
+  }
+
+  // ── Actions ──
+  async function createNewChat() {
+    try {
+      const chat = await fetchJSON("/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          modelId: selectedModel,
+          projectId: selectedProject,
+        }),
+      });
+      setActiveChat(chat);
+      setMessages([]);
+      await loadChats();
+    } catch (err) {
+      setError("Failed to create chat: " + err.message);
+    }
+  }
+
+  async function deleteChat(id) {
+    try {
+      await fetchJSON(`/chat/${id}`, { method: "DELETE" });
+      if (activeChat?.id === id) {
+        setActiveChat(null);
+        setMessages([]);
+      }
+      await loadChats();
+    } catch (err) {
+      setError("Failed to delete chat: " + err.message);
+    }
+  }
+
+  const handleSend = useCallback(async () => {
+    if (!input.trim() || streaming) return;
+
+    let chatId = activeChat?.id;
+
+    // Create chat if none active
+    if (!chatId) {
+      try {
+        const chat = await fetchJSON("/chat", {
+          method: "POST",
+          body: JSON.stringify({
+            modelId: selectedModel,
+            projectId: selectedProject,
+          }),
+        });
+        setActiveChat(chat);
+        chatId = chat.id;
+      } catch (err) {
+        setError("Failed to create chat: " + err.message);
+        return;
+      }
+    }
+
+    const content = enhanceResult?.enhanced || input;
+    const isEnhanced = !!enhanceResult;
+
+    setMessages((prev) => [...prev, { role: "user", content, enhanced: isEnhanced, created_at: new Date().toISOString() }]);
+    setInput("");
+    setEnhanceResult(null);
+    setEnhanceMode(false);
+    setStreaming(true);
+    setStreamText("");
+    setError(null);
+
+    abortRef.current = streamMessage(
+      chatId,
+      content,
+      { model: selectedModel, enhanced: isEnhanced },
+      (text) => setStreamText((prev) => prev + text),
+      (data) => {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: data.fullText,
+            model_used: data.model,
+            tokens_in: data.usage.input_tokens,
+            tokens_out: data.usage.output_tokens,
+            cost_usd: data.cost,
+            duration_ms: data.durationMs,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+        setStreamText("");
+        setStreaming(false);
+        loadChats(); // Refresh sidebar for auto-title
+      },
+      (err) => {
+        setError(err.message);
+        setStreaming(false);
+        setStreamText("");
+      }
+    );
+  }, [input, streaming, activeChat, selectedModel, selectedProject, enhanceResult]);
+
+  async function handleEnhance() {
+    if (!input.trim() || enhancing) return;
+    setEnhancing(true);
+    setError(null);
+    try {
+      const result = await fetchJSON("/enhance", {
+        method: "POST",
+        body: JSON.stringify({ prompt: input, projectId: selectedProject }),
+      });
+      setEnhanceResult(result);
+      setEnhanceMode(true);
+    } catch (err) {
+      setError("Enhancement failed: " + err.message);
+    } finally {
+      setEnhancing(false);
+    }
+  }
+
+  function handleStop() {
+    if (abortRef.current) {
+      abortRef.current();
+      setStreaming(false);
+      if (streamText) {
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", content: streamText + "\n\n[Stopped]", created_at: new Date().toISOString() },
+        ]);
+        setStreamText("");
+      }
+    }
+  }
+
+  function handleKeyDown(e) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  }
+
+  const filteredChats = chats.filter((c) =>
+    c.title.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  const currentModel = models.find((m) => m.id === selectedModel);
+
+  return (
+    <div style={styles.container}>
+      {/* ── Sidebar ── */}
+      {sidebarOpen && (
+        <div style={styles.sidebar}>
+          <div style={styles.sidebarHeader}>
+            <h1 style={styles.logo}>NEXUS</h1>
+            <button onClick={() => setSidebarOpen(false)} style={styles.iconBtn} title="Close sidebar">
+              &laquo;
+            </button>
+          </div>
+
+          <button onClick={createNewChat} style={styles.newChatBtn}>
+            + New Chat
+          </button>
+
+          <input
+            type="text"
+            placeholder="Search chats..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            style={styles.searchInput}
+          />
+
+          <div style={styles.chatList}>
+            {filteredChats.map((chat) => (
+              <div
+                key={chat.id}
+                onClick={() => loadChat(chat.id)}
+                style={{
+                  ...styles.chatItem,
+                  ...(activeChat?.id === chat.id ? styles.chatItemActive : {}),
+                }}
+              >
+                <div style={styles.chatTitle}>{chat.title}</div>
+                <div style={styles.chatMeta}>
+                  {chat.message_count || 0} messages
+                  <button
+                    onClick={(e) => { e.stopPropagation(); deleteChat(chat.id); }}
+                    style={styles.deleteBtn}
+                    title="Delete chat"
+                  >
+                    x
+                  </button>
+                </div>
+              </div>
+            ))}
+            {filteredChats.length === 0 && (
+              <div style={styles.emptyState}>No chats yet</div>
+            )}
+          </div>
+
+          {/* Projects section */}
+          {projects.length > 0 && (
+            <div style={styles.projectSection}>
+              <div style={styles.sectionLabel}>Projects</div>
+              <select
+                value={selectedProject || ""}
+                onChange={(e) => setSelectedProject(e.target.value ? Number(e.target.value) : null)}
+                style={styles.select}
+              >
+                <option value="">No project</option>
+                {projects.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Main ── */}
+      <div style={styles.main}>
+        {/* Top bar */}
+        <div style={styles.topBar}>
+          {!sidebarOpen && (
+            <button onClick={() => setSidebarOpen(true)} style={styles.iconBtn} title="Open sidebar">
+              &raquo;
+            </button>
+          )}
+
+          <select
+            value={selectedModel}
+            onChange={(e) => setSelectedModel(e.target.value)}
+            style={styles.modelSelect}
+          >
+            {models.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label} — ${Number(m.input_price)}/${Number(m.output_price)} per MTok
+              </option>
+            ))}
+          </select>
+
+          {currentModel && (
+            <span style={styles.modelBadge}>{currentModel.tier}</span>
+          )}
+
+          {activeChat?.project_id && (
+            <span style={styles.projectBadge}>
+              {projects.find((p) => p.id === activeChat.project_id)?.name || "Project"}
+            </span>
+          )}
+        </div>
+
+        {/* Messages area */}
+        <div style={styles.messagesArea}>
+          {messages.length === 0 && !streaming && (
+            <div style={styles.welcome}>
+              <h2 style={styles.welcomeTitle}>Nexus</h2>
+              <p style={styles.welcomeText}>
+                Claude Operations Platform — persistent chat, project context, prompt enhancement.
+              </p>
+              <p style={styles.welcomeHint}>
+                Select a model above and start typing.
+              </p>
+            </div>
+          )}
+
+          {messages.map((msg, i) => (
+            <div key={i} style={{ ...styles.message, ...(msg.role === "user" ? styles.userMessage : styles.assistantMessage) }}>
+              <div style={styles.messageRole}>
+                {msg.role === "user" ? "You" : "Claude"}
+                {msg.enhanced && <span style={styles.enhancedBadge}>enhanced</span>}
+              </div>
+              <div
+                style={styles.messageContent}
+                dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }}
+              />
+              {msg.role === "assistant" && msg.tokens_in && (
+                <div style={styles.messageMeta}>
+                  {msg.model_used} | {msg.tokens_in?.toLocaleString()} in / {msg.tokens_out?.toLocaleString()} out | {formatCost(msg.cost_usd)} | {formatTime(msg.duration_ms)}
+                </div>
+              )}
+            </div>
+          ))}
+
+          {streaming && streamText && (
+            <div style={{ ...styles.message, ...styles.assistantMessage }}>
+              <div style={styles.messageRole}>Claude</div>
+              <div
+                style={styles.messageContent}
+                dangerouslySetInnerHTML={{ __html: renderMarkdown(streamText) }}
+              />
+              <div style={styles.streamingDot} />
+            </div>
+          )}
+
+          {streaming && !streamText && (
+            <div style={{ ...styles.message, ...styles.assistantMessage }}>
+              <div style={styles.messageRole}>Claude</div>
+              <div style={styles.thinkingText}>Thinking...</div>
+            </div>
+          )}
+
+          <div ref={endRef} />
+        </div>
+
+        {/* Error banner */}
+        {error && (
+          <div style={styles.errorBanner}>
+            {error}
+            <button onClick={() => setError(null)} style={styles.errorClose}>x</button>
+          </div>
+        )}
+
+        {/* Enhancement panel */}
+        {enhanceMode && enhanceResult && (
+          <div style={styles.enhancePanel}>
+            <div style={styles.enhanceHeader}>
+              <span>Enhanced Prompt</span>
+              <div>
+                {enhanceResult.analysis && (
+                  <span style={styles.analysisBadge}>
+                    {enhanceResult.analysis.taskType} | complexity {enhanceResult.analysis.complexity}/5 | rec: {enhanceResult.analysis.recommendedModel}
+                  </span>
+                )}
+                <button onClick={() => { setEnhanceMode(false); setEnhanceResult(null); }} style={styles.iconBtn}>x</button>
+              </div>
+            </div>
+            <div style={styles.enhanceComparison}>
+              <div style={styles.enhanceCol}>
+                <div style={styles.enhanceLabel}>Original</div>
+                <div style={styles.enhanceText}>{enhanceResult.original}</div>
+              </div>
+              <div style={styles.enhanceCol}>
+                <div style={styles.enhanceLabel}>Enhanced</div>
+                <div style={styles.enhanceText}>{enhanceResult.enhanced}</div>
+              </div>
+            </div>
+            <div style={styles.enhanceActions}>
+              <button onClick={handleSend} style={styles.sendBtn}>Send Enhanced</button>
+              <button onClick={() => { setEnhanceResult(null); setEnhanceMode(false); }} style={styles.secondaryBtn}>
+                Use Original
+              </button>
+              {enhanceResult.enhancement && (
+                <span style={styles.enhanceMeta}>
+                  {formatCost(enhanceResult.enhancement.cost)} | {formatTime(enhanceResult.enhancement.durationMs)}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Input area */}
+        <div style={styles.inputArea}>
+          <div style={styles.inputRow}>
+            <textarea
+              ref={taRef}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={streaming ? "Waiting for response..." : "Message Claude..."}
+              disabled={streaming}
+              style={styles.textarea}
+              rows={1}
+            />
+            <div style={styles.inputActions}>
+              {!streaming ? (
+                <>
+                  <button
+                    onClick={handleEnhance}
+                    disabled={!input.trim() || enhancing}
+                    style={{
+                      ...styles.enhanceBtn,
+                      opacity: input.trim() && !enhancing ? 1 : 0.4,
+                    }}
+                    title="Enhance prompt"
+                  >
+                    {enhancing ? "..." : "Enhance"}
+                  </button>
+                  <button
+                    onClick={handleSend}
+                    disabled={!input.trim()}
+                    style={{
+                      ...styles.sendBtn,
+                      opacity: input.trim() ? 1 : 0.4,
+                    }}
+                  >
+                    Send
+                  </button>
+                </>
+              ) : (
+                <button onClick={handleStop} style={styles.stopBtn}>
+                  Stop
+                </button>
+              )}
+            </div>
+          </div>
+          <div style={styles.inputFooter}>
+            {currentModel && (
+              <span>
+                {currentModel.label} | ${Number(currentModel.input_price)} in / ${Number(currentModel.output_price)} out per MTok
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Styles ──
+
+const styles = {
+  container: {
+    display: "flex",
+    height: "100vh",
+    width: "100vw",
+    overflow: "hidden",
+    background: "var(--bg-primary)",
+  },
+
+  // Sidebar
+  sidebar: {
+    width: 280,
+    minWidth: 280,
+    background: "var(--bg-secondary)",
+    borderRight: "1px solid var(--border)",
+    display: "flex",
+    flexDirection: "column",
+    overflow: "hidden",
+  },
+  sidebarHeader: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: "16px 16px 8px",
+  },
+  logo: {
+    fontSize: 16,
+    fontWeight: 700,
+    letterSpacing: 3,
+    color: "var(--accent)",
+  },
+  newChatBtn: {
+    margin: "8px 16px",
+    padding: "10px",
+    background: "var(--accent)",
+    color: "var(--bg-primary)",
+    border: "none",
+    borderRadius: 6,
+    cursor: "pointer",
+    fontWeight: 600,
+    fontSize: 14,
+  },
+  searchInput: {
+    margin: "0 16px 8px",
+    padding: "8px 12px",
+    background: "var(--bg-tertiary)",
+    border: "1px solid var(--border)",
+    borderRadius: 6,
+    color: "var(--text-primary)",
+    fontSize: 13,
+    outline: "none",
+  },
+  chatList: {
+    flex: 1,
+    overflowY: "auto",
+    padding: "0 8px",
+  },
+  chatItem: {
+    padding: "10px 12px",
+    borderRadius: 6,
+    cursor: "pointer",
+    marginBottom: 2,
+    transition: "background 0.15s",
+  },
+  chatItemActive: {
+    background: "var(--bg-elevated)",
+    border: "1px solid var(--border-active)",
+  },
+  chatTitle: {
+    fontSize: 13,
+    color: "var(--text-primary)",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
+  chatMeta: {
+    fontSize: 11,
+    color: "var(--text-muted)",
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginTop: 4,
+  },
+  deleteBtn: {
+    background: "none",
+    border: "none",
+    color: "var(--text-muted)",
+    cursor: "pointer",
+    fontSize: 12,
+    padding: "0 4px",
+    opacity: 0.5,
+  },
+  emptyState: {
+    color: "var(--text-muted)",
+    fontSize: 13,
+    textAlign: "center",
+    padding: 20,
+  },
+  projectSection: {
+    padding: "12px 16px",
+    borderTop: "1px solid var(--border)",
+  },
+  sectionLabel: {
+    fontSize: 11,
+    color: "var(--text-muted)",
+    textTransform: "uppercase",
+    letterSpacing: 1,
+    marginBottom: 6,
+  },
+
+  // Main
+  main: {
+    flex: 1,
+    display: "flex",
+    flexDirection: "column",
+    overflow: "hidden",
+  },
+  topBar: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    padding: "10px 16px",
+    borderBottom: "1px solid var(--border)",
+    background: "var(--bg-secondary)",
+  },
+  modelSelect: {
+    background: "var(--bg-tertiary)",
+    border: "1px solid var(--border)",
+    borderRadius: 6,
+    color: "var(--text-primary)",
+    padding: "6px 10px",
+    fontSize: 13,
+    outline: "none",
+    cursor: "pointer",
+  },
+  select: {
+    width: "100%",
+    background: "var(--bg-tertiary)",
+    border: "1px solid var(--border)",
+    borderRadius: 6,
+    color: "var(--text-primary)",
+    padding: "6px 10px",
+    fontSize: 13,
+    outline: "none",
+  },
+  modelBadge: {
+    fontSize: 11,
+    padding: "2px 8px",
+    borderRadius: 4,
+    background: "var(--accent-glow)",
+    color: "var(--accent)",
+    textTransform: "uppercase",
+    letterSpacing: 1,
+    fontWeight: 600,
+  },
+  projectBadge: {
+    fontSize: 11,
+    padding: "2px 8px",
+    borderRadius: 4,
+    background: "rgba(255, 170, 51, 0.15)",
+    color: "var(--warning)",
+  },
+  iconBtn: {
+    background: "none",
+    border: "none",
+    color: "var(--text-secondary)",
+    cursor: "pointer",
+    fontSize: 16,
+    padding: "4px 8px",
+  },
+
+  // Messages
+  messagesArea: {
+    flex: 1,
+    overflowY: "auto",
+    padding: "20px 0",
+  },
+  welcome: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "center",
+    height: "100%",
+    color: "var(--text-secondary)",
+    padding: 40,
+    textAlign: "center",
+  },
+  welcomeTitle: {
+    fontSize: 28,
+    fontWeight: 700,
+    color: "var(--accent)",
+    marginBottom: 12,
+    letterSpacing: 2,
+  },
+  welcomeText: {
+    fontSize: 14,
+    maxWidth: 500,
+    lineHeight: 1.6,
+    marginBottom: 8,
+  },
+  welcomeHint: {
+    fontSize: 13,
+    color: "var(--text-muted)",
+  },
+  message: {
+    padding: "16px 24px",
+    maxWidth: 800,
+    margin: "0 auto 8px",
+    width: "100%",
+  },
+  userMessage: {
+    background: "var(--bg-tertiary)",
+    borderRadius: 8,
+    maxWidth: 780,
+    marginLeft: "auto",
+    marginRight: "auto",
+  },
+  assistantMessage: {
+    background: "transparent",
+  },
+  messageRole: {
+    fontSize: 12,
+    fontWeight: 600,
+    color: "var(--text-muted)",
+    marginBottom: 6,
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+  },
+  enhancedBadge: {
+    fontSize: 10,
+    padding: "1px 6px",
+    borderRadius: 3,
+    background: "var(--accent-glow)",
+    color: "var(--accent)",
+    fontWeight: 500,
+  },
+  messageContent: {
+    fontSize: 14,
+    lineHeight: 1.7,
+    color: "var(--text-primary)",
+    wordBreak: "break-word",
+  },
+  messageMeta: {
+    fontSize: 11,
+    color: "var(--text-muted)",
+    marginTop: 8,
+    fontFamily: "monospace",
+  },
+  streamingDot: {
+    width: 8,
+    height: 8,
+    borderRadius: "50%",
+    background: "var(--accent)",
+    marginTop: 8,
+    animation: "pulse 1s ease-in-out infinite",
+  },
+  thinkingText: {
+    color: "var(--text-muted)",
+    fontStyle: "italic",
+    fontSize: 13,
+  },
+
+  // Error
+  errorBanner: {
+    padding: "8px 16px",
+    background: "rgba(255, 68, 102, 0.1)",
+    color: "var(--danger)",
+    fontSize: 13,
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  errorClose: {
+    background: "none",
+    border: "none",
+    color: "var(--danger)",
+    cursor: "pointer",
+    fontSize: 14,
+  },
+
+  // Enhancement panel
+  enhancePanel: {
+    background: "var(--bg-secondary)",
+    borderTop: "1px solid var(--border)",
+    padding: "12px 16px",
+  },
+  enhanceHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    fontSize: 13,
+    fontWeight: 600,
+    color: "var(--accent)",
+    marginBottom: 10,
+  },
+  enhanceComparison: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: 12,
+    marginBottom: 10,
+  },
+  enhanceCol: {},
+  enhanceLabel: {
+    fontSize: 11,
+    color: "var(--text-muted)",
+    marginBottom: 4,
+    textTransform: "uppercase",
+    letterSpacing: 1,
+  },
+  enhanceText: {
+    fontSize: 13,
+    color: "var(--text-secondary)",
+    background: "var(--bg-tertiary)",
+    padding: 10,
+    borderRadius: 6,
+    maxHeight: 120,
+    overflowY: "auto",
+    lineHeight: 1.5,
+  },
+  enhanceActions: {
+    display: "flex",
+    gap: 8,
+    alignItems: "center",
+  },
+  analysisBadge: {
+    fontSize: 11,
+    color: "var(--text-muted)",
+    marginRight: 10,
+  },
+  enhanceMeta: {
+    fontSize: 11,
+    color: "var(--text-muted)",
+    marginLeft: "auto",
+  },
+
+  // Input
+  inputArea: {
+    padding: "12px 16px 16px",
+    borderTop: "1px solid var(--border)",
+    background: "var(--bg-secondary)",
+  },
+  inputRow: {
+    display: "flex",
+    gap: 8,
+    alignItems: "flex-end",
+  },
+  textarea: {
+    flex: 1,
+    resize: "none",
+    background: "var(--bg-tertiary)",
+    border: "1px solid var(--border)",
+    borderRadius: 8,
+    color: "var(--text-primary)",
+    padding: "10px 14px",
+    fontSize: 14,
+    lineHeight: 1.5,
+    outline: "none",
+    fontFamily: "inherit",
+    minHeight: 42,
+    maxHeight: 200,
+  },
+  inputActions: {
+    display: "flex",
+    gap: 6,
+    flexShrink: 0,
+  },
+  sendBtn: {
+    padding: "8px 16px",
+    background: "var(--accent)",
+    color: "var(--bg-primary)",
+    border: "none",
+    borderRadius: 6,
+    cursor: "pointer",
+    fontWeight: 600,
+    fontSize: 13,
+    whiteSpace: "nowrap",
+  },
+  enhanceBtn: {
+    padding: "8px 12px",
+    background: "var(--bg-elevated)",
+    color: "var(--accent)",
+    border: "1px solid var(--border-active)",
+    borderRadius: 6,
+    cursor: "pointer",
+    fontSize: 13,
+    whiteSpace: "nowrap",
+  },
+  stopBtn: {
+    padding: "8px 16px",
+    background: "var(--danger)",
+    color: "white",
+    border: "none",
+    borderRadius: 6,
+    cursor: "pointer",
+    fontWeight: 600,
+    fontSize: 13,
+  },
+  secondaryBtn: {
+    padding: "8px 12px",
+    background: "var(--bg-tertiary)",
+    color: "var(--text-secondary)",
+    border: "1px solid var(--border)",
+    borderRadius: 6,
+    cursor: "pointer",
+    fontSize: 13,
+  },
+  inputFooter: {
+    fontSize: 11,
+    color: "var(--text-muted)",
+    marginTop: 6,
+    paddingLeft: 2,
+  },
+};
