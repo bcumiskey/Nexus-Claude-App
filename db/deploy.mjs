@@ -35,7 +35,7 @@ async function deploy() {
 
   for (const stmt of statements) {
     try {
-      await sql(stmt);
+      await sql.query(stmt);
     } catch (err) {
       // Skip errors for IF NOT EXISTS / ON CONFLICT
       if (
