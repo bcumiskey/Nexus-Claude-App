@@ -23,7 +23,7 @@ function streamMessage(chatId, content, opts, onText, onDone, onError) {
       const res = await fetch(`/api/chat/${chatId}/send`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content, model: opts.model, enhanced: opts.enhanced || false }),
+        body: JSON.stringify({ content, model: opts.model, enhanced: opts.enhanced || false, thinking: opts.thinking || false, fast: opts.fast || false }),
         signal: controller.signal,
       });
       const reader = res.body.getReader();
@@ -115,6 +115,8 @@ export default function NexusChat() {
   const [creatingProject, setCreatingProject] = useState(false);
   const [expandedProject, setExpandedProject] = useState(null);
   const [showAllChats, setShowAllChats] = useState(false);
+  const [thinkingEnabled, setThinkingEnabled] = useState(false);
+  const [fastEnabled, setFastEnabled] = useState(false);
 
   const endRef = useRef(null);
   const taRef = useRef(null);
@@ -131,6 +133,14 @@ export default function NexusChat() {
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, streamText]);
+
+  // ── Auto-disable capability toggles on model change ──
+  useEffect(() => {
+    const m = models.find((mod) => mod.id === selectedModel);
+    if (!m) return;
+    if (!m.supports_thinking) setThinkingEnabled(false);
+    if (!m.supports_fast) setFastEnabled(false);
+  }, [selectedModel, models]);
 
   // ── Auto-resize textarea ──
   useEffect(() => {
@@ -270,7 +280,7 @@ export default function NexusChat() {
     abortRef.current = streamMessage(
       chatId,
       content,
-      { model: selectedModel, enhanced: isEnhanced },
+      { model: selectedModel, enhanced: isEnhanced, thinking: thinkingEnabled, fast: fastEnabled },
       (text) => setStreamText((prev) => prev + text),
       (data) => {
         setMessages((prev) => [
@@ -296,7 +306,7 @@ export default function NexusChat() {
         setStreamText("");
       }
     );
-  }, [input, streaming, activeChat, selectedModel, selectedProject, enhanceResult]);
+  }, [input, streaming, activeChat, selectedModel, selectedProject, enhanceResult, thinkingEnabled, fastEnabled]);
 
   async function handleEnhance() {
     if (!input.trim() || enhancing) return;
@@ -591,6 +601,26 @@ export default function NexusChat() {
 
           {currentModel && (
             <span style={styles.modelBadge}>{currentModel.tier}</span>
+          )}
+
+          {currentModel?.supports_thinking && (
+            <button
+              onClick={() => setThinkingEnabled((v) => !v)}
+              style={thinkingEnabled ? styles.capToggleThinkingActive : styles.capToggle}
+              title={thinkingEnabled ? "Disable extended thinking" : "Enable extended thinking"}
+            >
+              {"🧠"}
+            </button>
+          )}
+
+          {currentModel?.supports_fast && (
+            <button
+              onClick={() => setFastEnabled((v) => !v)}
+              style={fastEnabled ? styles.capToggleFastActive : styles.capToggle}
+              title={fastEnabled ? "Disable fast mode" : "Enable fast mode (~2.5x speed)"}
+            >
+              {"⚡"}
+            </button>
           )}
 
           {activeChat?.project_id && (
@@ -1055,6 +1085,39 @@ const styles = {
     borderRadius: 4,
     background: "rgba(255, 170, 51, 0.15)",
     color: "var(--warning)",
+  },
+  capToggle: {
+    padding: "4px 8px",
+    borderRadius: 5,
+    border: "1px solid var(--border)",
+    background: "var(--bg-tertiary)",
+    cursor: "pointer",
+    fontSize: 14,
+    lineHeight: 1,
+    opacity: 0.5,
+    transition: "all 0.15s",
+  },
+  capToggleThinkingActive: {
+    padding: "4px 8px",
+    borderRadius: 5,
+    border: "1px solid rgba(168, 85, 247, 0.5)",
+    background: "rgba(168, 85, 247, 0.15)",
+    cursor: "pointer",
+    fontSize: 14,
+    lineHeight: 1,
+    opacity: 1,
+    transition: "all 0.15s",
+  },
+  capToggleFastActive: {
+    padding: "4px 8px",
+    borderRadius: 5,
+    border: "1px solid rgba(245, 158, 11, 0.5)",
+    background: "rgba(245, 158, 11, 0.15)",
+    cursor: "pointer",
+    fontSize: 14,
+    lineHeight: 1,
+    opacity: 1,
+    transition: "all 0.15s",
   },
   iconBtn: {
     background: "none",
