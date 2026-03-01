@@ -605,7 +605,7 @@ export default function NexusChat() {
 
           {currentModel?.supports_thinking && (
             <button
-              onClick={() => setThinkingEnabled((v) => !v)}
+              onClick={() => { setThinkingEnabled((v) => !v); setFastEnabled(false); }}
               style={thinkingEnabled ? styles.capToggleThinkingActive : styles.capToggle}
               title={thinkingEnabled ? "Disable extended thinking" : "Enable extended thinking"}
             >
@@ -615,7 +615,7 @@ export default function NexusChat() {
 
           {currentModel?.supports_fast && (
             <button
-              onClick={() => setFastEnabled((v) => !v)}
+              onClick={() => { setFastEnabled((v) => !v); setThinkingEnabled(false); }}
               style={fastEnabled ? styles.capToggleFastActive : styles.capToggle}
               title={fastEnabled ? "Disable fast mode" : "Enable fast mode (~2.5x speed)"}
             >
