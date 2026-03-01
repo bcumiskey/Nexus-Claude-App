@@ -108,6 +108,11 @@ export default function NexusChat() {
   const [enhanceResult, setEnhanceResult] = useState(null);
   const [enhancing, setEnhancing] = useState(false);
   const [error, setError] = useState(null);
+  const [sidebarTab, setSidebarTab] = useState("chats");
+  const [showNewProjectForm, setShowNewProjectForm] = useState(false);
+  const [newProjectName, setNewProjectName] = useState("");
+  const [newProjectGoal, setNewProjectGoal] = useState("");
+  const [creatingProject, setCreatingProject] = useState(false);
 
   const endRef = useRef(null);
   const taRef = useRef(null);
@@ -202,6 +207,27 @@ export default function NexusChat() {
       await loadChats();
     } catch (err) {
       setError("Failed to delete chat: " + err.message);
+    }
+  }
+
+  async function createProject() {
+    if (!newProjectName.trim() || creatingProject) return;
+    setCreatingProject(true);
+    setError(null);
+    try {
+      const project = await fetchJSON("/project", {
+        method: "POST",
+        body: JSON.stringify({ name: newProjectName.trim(), goal: newProjectGoal.trim() || null }),
+      });
+      setNewProjectName("");
+      setNewProjectGoal("");
+      setShowNewProjectForm(false);
+      setSelectedProject(project.id);
+      await loadProjects();
+    } catch (err) {
+      setError("Failed to create project: " + err.message);
+    } finally {
+      setCreatingProject(false);
     }
   }
 
@@ -327,60 +353,157 @@ export default function NexusChat() {
             </button>
           </div>
 
-          <button onClick={createNewChat} style={styles.newChatBtn}>
-            + New Chat
-          </button>
-
-          <input
-            type="text"
-            placeholder="Search chats..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            style={styles.searchInput}
-          />
-
-          <div style={styles.chatList}>
-            {filteredChats.map((chat) => (
-              <div
-                key={chat.id}
-                onClick={() => loadChat(chat.id)}
-                style={{
-                  ...styles.chatItem,
-                  ...(activeChat?.id === chat.id ? styles.chatItemActive : {}),
-                }}
-              >
-                <div style={styles.chatTitle}>{chat.title}</div>
-                <div style={styles.chatMeta}>
-                  {chat.message_count || 0} messages
-                  <button
-                    onClick={(e) => { e.stopPropagation(); deleteChat(chat.id); }}
-                    style={styles.deleteBtn}
-                    title="Delete chat"
-                  >
-                    x
-                  </button>
-                </div>
-              </div>
-            ))}
-            {filteredChats.length === 0 && (
-              <div style={styles.emptyState}>No chats yet</div>
-            )}
+          {/* Tab switcher */}
+          <div style={styles.tabBar}>
+            <button
+              onClick={() => setSidebarTab("chats")}
+              style={{ ...styles.tab, ...(sidebarTab === "chats" ? styles.tabActive : {}) }}
+            >
+              Chats
+            </button>
+            <button
+              onClick={() => setSidebarTab("projects")}
+              style={{ ...styles.tab, ...(sidebarTab === "projects" ? styles.tabActive : {}) }}
+            >
+              Projects
+            </button>
           </div>
 
-          {/* Projects section */}
-          {projects.length > 0 && (
-            <div style={styles.projectSection}>
-              <div style={styles.sectionLabel}>Projects</div>
-              <select
-                value={selectedProject || ""}
-                onChange={(e) => setSelectedProject(e.target.value ? Number(e.target.value) : null)}
-                style={styles.select}
-              >
-                <option value="">No project</option>
-                {projects.map((p) => (
-                  <option key={p.id} value={p.id}>{p.name}</option>
+          {/* Chats tab */}
+          {sidebarTab === "chats" && (
+            <>
+              <button onClick={createNewChat} style={styles.newChatBtn}>
+                + New Chat
+              </button>
+
+              <input
+                type="text"
+                placeholder="Search chats..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                style={styles.searchInput}
+              />
+
+              <div style={styles.chatList}>
+                {filteredChats.map((chat) => (
+                  <div
+                    key={chat.id}
+                    onClick={() => loadChat(chat.id)}
+                    style={{
+                      ...styles.chatItem,
+                      ...(activeChat?.id === chat.id ? styles.chatItemActive : {}),
+                    }}
+                  >
+                    <div style={styles.chatTitle}>{chat.title}</div>
+                    <div style={styles.chatMeta}>
+                      {chat.message_count || 0} messages
+                      <button
+                        onClick={(e) => { e.stopPropagation(); deleteChat(chat.id); }}
+                        style={styles.deleteBtn}
+                        title="Delete chat"
+                      >
+                        x
+                      </button>
+                    </div>
+                  </div>
                 ))}
-              </select>
+                {filteredChats.length === 0 && (
+                  <div style={styles.emptyState}>No chats yet</div>
+                )}
+              </div>
+            </>
+          )}
+
+          {/* Projects tab */}
+          {sidebarTab === "projects" && (
+            <>
+              <button onClick={() => setShowNewProjectForm((v) => !v)} style={styles.newChatBtn}>
+                + New Project
+              </button>
+
+              {showNewProjectForm && (
+                <div style={styles.projectForm}>
+                  <input
+                    type="text"
+                    placeholder="Project name"
+                    value={newProjectName}
+                    onChange={(e) => setNewProjectName(e.target.value)}
+                    style={styles.searchInput}
+                  />
+                  <input
+                    type="text"
+                    placeholder="Goal (optional)"
+                    value={newProjectGoal}
+                    onChange={(e) => setNewProjectGoal(e.target.value)}
+                    style={styles.searchInput}
+                  />
+                  <div style={styles.projectFormActions}>
+                    <button
+                      onClick={createProject}
+                      disabled={!newProjectName.trim() || creatingProject}
+                      style={{
+                        ...styles.sendBtn,
+                        fontSize: 12,
+                        padding: "6px 12px",
+                        opacity: newProjectName.trim() && !creatingProject ? 1 : 0.4,
+                      }}
+                    >
+                      {creatingProject ? "Creating..." : "Create"}
+                    </button>
+                    <button
+                      onClick={() => { setShowNewProjectForm(false); setNewProjectName(""); setNewProjectGoal(""); }}
+                      style={{ ...styles.secondaryBtn, fontSize: 12, padding: "6px 12px" }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <div style={styles.chatList}>
+                {projects.map((p) => (
+                  <div
+                    key={p.id}
+                    onClick={() => setSelectedProject(selectedProject === p.id ? null : p.id)}
+                    style={{
+                      ...styles.chatItem,
+                      ...(selectedProject === p.id ? styles.chatItemActive : {}),
+                    }}
+                  >
+                    <div style={styles.chatTitle}>{p.name}</div>
+                    <div style={styles.chatMeta}>
+                      <span>
+                        <span style={styles.projectStatusDot(p.status)} />
+                        {p.status || "active"}
+                      </span>
+                      <span>{Number(p.chat_count) || 0} chats</span>
+                    </div>
+                    {p.goal && (
+                      <div style={styles.projectGoal}>{p.goal}</div>
+                    )}
+                  </div>
+                ))}
+                {projects.length === 0 && (
+                  <div style={styles.emptyState}>No projects yet</div>
+                )}
+              </div>
+            </>
+          )}
+
+          {/* Selected project indicator */}
+          {selectedProject && (
+            <div style={styles.projectIndicator}>
+              <span style={styles.projectIndicatorLabel}>Project:</span>
+              <span style={styles.projectIndicatorName}>
+                {projects.find((p) => p.id === selectedProject)?.name || "Unknown"}
+              </span>
+              <button
+                onClick={() => setSelectedProject(null)}
+                style={styles.projectIndicatorClose}
+                title="Deselect project"
+              >
+                &#x2715;
+              </button>
             </div>
           )}
         </div>
@@ -676,16 +799,89 @@ const styles = {
     textAlign: "center",
     padding: 20,
   },
-  projectSection: {
-    padding: "12px 16px",
-    borderTop: "1px solid var(--border)",
+  tabBar: {
+    display: "flex",
+    margin: "0 16px 8px",
+    borderRadius: 6,
+    background: "var(--bg-tertiary)",
+    overflow: "hidden",
   },
-  sectionLabel: {
+  tab: {
+    flex: 1,
+    padding: "8px 0",
+    background: "transparent",
+    border: "none",
+    color: "var(--text-muted)",
+    fontSize: 13,
+    fontWeight: 500,
+    cursor: "pointer",
+    transition: "all 0.15s",
+  },
+  tabActive: {
+    background: "var(--bg-elevated)",
+    color: "var(--accent)",
+    fontWeight: 600,
+  },
+  projectForm: {
+    padding: "0 16px 8px",
+    display: "flex",
+    flexDirection: "column",
+    gap: 6,
+  },
+  projectFormActions: {
+    display: "flex",
+    gap: 6,
+    marginTop: 2,
+  },
+  projectGoal: {
+    fontSize: 11,
+    color: "var(--text-muted)",
+    marginTop: 4,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
+  projectStatusDot: (status) => ({
+    display: "inline-block",
+    width: 6,
+    height: 6,
+    borderRadius: "50%",
+    marginRight: 4,
+    background: status === "completed" ? "var(--success, #4ade80)" : status === "archived" ? "var(--text-muted)" : "var(--accent)",
+  }),
+  projectIndicator: {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    padding: "10px 16px",
+    borderTop: "1px solid var(--border)",
+    background: "var(--bg-tertiary)",
+    marginTop: "auto",
+  },
+  projectIndicatorLabel: {
     fontSize: 11,
     color: "var(--text-muted)",
     textTransform: "uppercase",
     letterSpacing: 1,
-    marginBottom: 6,
+    flexShrink: 0,
+  },
+  projectIndicatorName: {
+    fontSize: 12,
+    color: "var(--accent)",
+    fontWeight: 600,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    flex: 1,
+  },
+  projectIndicatorClose: {
+    background: "none",
+    border: "none",
+    color: "var(--text-muted)",
+    cursor: "pointer",
+    fontSize: 13,
+    padding: "2px 4px",
+    flexShrink: 0,
   },
 
   // Main
