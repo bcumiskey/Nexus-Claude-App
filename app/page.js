@@ -16,7 +16,7 @@ async function fetchJSON(path, opts = {}) {
   return res.json();
 }
 
-function streamMessage(chatId, content, opts, onText, onDone, onError) {
+function streamMessage(chatId, content, opts, onText, onDone, onError, onThinking) {
   const controller = new AbortController();
   (async () => {
     try {
@@ -40,6 +40,8 @@ function streamMessage(chatId, content, opts, onText, onDone, onError) {
           try {
             const data = JSON.parse(line.slice(6));
             if (data.type === "text") onText(data.text);
+            else if (data.type === "thinking" && onThinking) onThinking(data.text);
+            else if (data.type === "thinking_start" && onThinking) onThinking(null);
             else if (data.type === "done") onDone(data);
             else if (data.type === "error") onError(new Error(data.error));
           } catch { /* skip */ }
@@ -117,10 +119,12 @@ export default function NexusChat() {
   const [showAllChats, setShowAllChats] = useState(false);
   const [thinkingEnabled, setThinkingEnabled] = useState(false);
   const [fastEnabled, setFastEnabled] = useState(false);
+  const [thinkingStreamText, setThinkingStreamText] = useState("");
 
   const endRef = useRef(null);
   const taRef = useRef(null);
   const abortRef = useRef(null);
+  const thinkingRef = useRef("");
 
   // ── Load initial data ──
   useEffect(() => {
@@ -275,19 +279,25 @@ export default function NexusChat() {
     setEnhanceMode(false);
     setStreaming(true);
     setStreamText("");
+    setThinkingStreamText("");
+    thinkingRef.current = "";
     setError(null);
 
     abortRef.current = streamMessage(
       chatId,
       content,
       { model: selectedModel, enhanced: isEnhanced, thinking: thinkingEnabled, fast: fastEnabled },
-      (text) => setStreamText((prev) => prev + text),
+      (text) => {
+        setThinkingStreamText("");
+        setStreamText((prev) => prev + text);
+      },
       (data) => {
         setMessages((prev) => [
           ...prev,
           {
             role: "assistant",
             content: data.fullText,
+            thinking: thinkingRef.current || null,
             model_used: data.model,
             tokens_in: data.usage.input_tokens,
             tokens_out: data.usage.output_tokens,
@@ -297,13 +307,21 @@ export default function NexusChat() {
           },
         ]);
         setStreamText("");
+        setThinkingStreamText("");
         setStreaming(false);
-        loadChats(); // Refresh sidebar for auto-title
+        loadChats();
       },
       (err) => {
         setError(err.message);
         setStreaming(false);
         setStreamText("");
+        setThinkingStreamText("");
+      },
+      (text) => {
+        if (text !== null) {
+          thinkingRef.current += text;
+          setThinkingStreamText((prev) => prev + text);
+        }
       }
     );
   }, [input, streaming, activeChat, selectedModel, selectedProject, enhanceResult, thinkingEnabled, fastEnabled]);
@@ -650,6 +668,16 @@ export default function NexusChat() {
                 {msg.role === "user" ? "You" : "Claude"}
                 {msg.enhanced && <span style={styles.enhancedBadge}>enhanced</span>}
               </div>
+              {msg.thinking && (
+                <details style={styles.thinkingBlock}>
+                  <summary style={styles.thinkingSummary}>
+                    {"🧠"} Thinking ({msg.thinking.length} chars)
+                  </summary>
+                  <div style={styles.thinkingContent}>
+                    {msg.thinking}
+                  </div>
+                </details>
+              )}
               <div
                 style={styles.messageContent}
                 dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }}
@@ -677,7 +705,19 @@ export default function NexusChat() {
             <div style={{ ...styles.message, ...styles.assistantMessage }}>
               <div style={styles.messageRole}>Claude</div>
               {thinkingEnabled
-                ? <div style={styles.thinkingText}>{"🧠"} Thinking...</div>
+                ? <>
+                    <div style={styles.thinkingText}>{"🧠"} Thinking...</div>
+                    {thinkingStreamText && (
+                      <details open style={styles.thinkingBlock}>
+                        <summary style={styles.thinkingSummary}>
+                          {"🧠"} Thinking ({thinkingStreamText.length} chars)
+                        </summary>
+                        <div style={styles.thinkingContent}>
+                          {thinkingStreamText}
+                        </div>
+                      </details>
+                    )}
+                  </>
                 : <div style={styles.pulseDots}>{"●●●"}</div>
               }
             </div>
@@ -1227,6 +1267,31 @@ const styles = {
     fontSize: 16,
     letterSpacing: 3,
     animation: "pulse 1.2s ease-in-out infinite",
+  },
+  thinkingBlock: {
+    marginBottom: 8,
+  },
+  thinkingSummary: {
+    fontSize: 12,
+    cursor: "pointer",
+    userSelect: "none",
+    display: "flex",
+    alignItems: "center",
+    gap: 4,
+    color: "var(--text-muted)",
+  },
+  thinkingContent: {
+    marginTop: 6,
+    padding: 10,
+    borderRadius: 6,
+    fontSize: 12,
+    whiteSpace: "pre-wrap",
+    background: "rgba(139, 92, 246, 0.08)",
+    border: "1px solid rgba(139, 92, 246, 0.2)",
+    color: "var(--text-muted)",
+    maxHeight: 300,
+    overflowY: "auto",
+    fontFamily: "monospace",
   },
 
   // Error
