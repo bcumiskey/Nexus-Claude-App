@@ -120,6 +120,14 @@ export default function NexusChat() {
   const [thinkingEnabled, setThinkingEnabled] = useState(false);
   const [fastEnabled, setFastEnabled] = useState(false);
   const [thinkingStreamText, setThinkingStreamText] = useState("");
+  const [editingProject, setEditingProject] = useState(null);
+  const [editName, setEditName] = useState("");
+  const [editGoal, setEditGoal] = useState("");
+  const [editStatus, setEditStatus] = useState("active");
+  const [editContext, setEditContext] = useState("");
+  const [editContextVersion, setEditContextVersion] = useState(null);
+  const [editContextUpdatedAt, setEditContextUpdatedAt] = useState(null);
+  const [savingProject, setSavingProject] = useState(false);
 
   const endRef = useRef(null);
   const taRef = useRef(null);
@@ -145,6 +153,16 @@ export default function NexusChat() {
     if (!m.supports_thinking) setThinkingEnabled(false);
     if (!m.supports_fast) setFastEnabled(false);
   }, [selectedModel, models]);
+
+  // ── Close project editor on Escape ──
+  useEffect(() => {
+    if (!editingProject) return;
+    function handleEsc(e) {
+      if (e.key === "Escape") setEditingProject(null);
+    }
+    window.addEventListener("keydown", handleEsc);
+    return () => window.removeEventListener("keydown", handleEsc);
+  }, [editingProject]);
 
   // ── Auto-resize textarea ──
   useEffect(() => {
@@ -244,6 +262,52 @@ export default function NexusChat() {
       setError("Failed to create project: " + err.message);
     } finally {
       setCreatingProject(false);
+    }
+  }
+
+  async function openProjectEditor(projectId) {
+    try {
+      const data = await fetchJSON(`/project/${projectId}`);
+      setEditingProject(data);
+      setEditName(data.name || "");
+      setEditGoal(data.goal || "");
+      setEditStatus(data.status || "active");
+      setEditContext(data.context?.compressed_text || "");
+      setEditContextVersion(data.context?.version || null);
+      setEditContextUpdatedAt(data.context?.created_at || null);
+    } catch (err) {
+      setError("Failed to load project: " + err.message);
+    }
+  }
+
+  function closeProjectEditor() {
+    setEditingProject(null);
+  }
+
+  async function saveProject() {
+    if (!editingProject || savingProject) return;
+    setSavingProject(true);
+    setError(null);
+    try {
+      const body = {};
+      if (editName !== editingProject.name) body.name = editName;
+      if (editGoal !== (editingProject.goal || "")) body.goal = editGoal;
+      if (editStatus !== editingProject.status) body.status = editStatus;
+      if (editContext !== (editingProject.context?.compressed_text || "")) {
+        body.compressed_text = editContext;
+      }
+      if (Object.keys(body).length > 0) {
+        await fetchJSON(`/project/${editingProject.id}`, {
+          method: "PATCH",
+          body: JSON.stringify(body),
+        });
+      }
+      setEditingProject(null);
+      await loadProjects();
+    } catch (err) {
+      setError("Failed to save project: " + err.message);
+    } finally {
+      setSavingProject(false);
     }
   }
 
@@ -538,7 +602,16 @@ export default function NexusChat() {
                             <span style={styles.projectStatusDot(p.status)} />
                             {p.status || "active"}
                           </span>
-                          <span>{Number(p.chat_count) || 0} chats</span>
+                          <span style={styles.projectMetaRight}>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); openProjectEditor(p.id); }}
+                              style={styles.editBtn}
+                              title="Edit project"
+                            >
+                              Edit
+                            </button>
+                            {Number(p.chat_count) || 0} chats
+                          </span>
                         </div>
                         {p.goal && (
                           <div style={styles.projectGoal}>{p.goal}</div>
@@ -826,6 +899,84 @@ export default function NexusChat() {
           </div>
         </div>
       </div>
+
+      {/* ── Project Editor Slide-over ── */}
+      {editingProject && (
+        <>
+          <div style={styles.editorOverlay} onClick={closeProjectEditor} />
+          <div style={styles.editorPanel}>
+            <div style={styles.editorHeader}>
+              <h2 style={styles.editorTitle}>Edit Project</h2>
+              <button onClick={closeProjectEditor} style={styles.iconBtn} title="Close">
+                &#x2715;
+              </button>
+            </div>
+
+            <div style={styles.editorBody}>
+              <label style={styles.editorLabel}>Name</label>
+              <input
+                type="text"
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                style={styles.editorInput}
+              />
+
+              <label style={styles.editorLabel}>Goal</label>
+              <textarea
+                value={editGoal}
+                onChange={(e) => setEditGoal(e.target.value)}
+                style={{ ...styles.editorInput, minHeight: 60, resize: "vertical", fontFamily: "inherit" }}
+                rows={2}
+              />
+
+              <label style={styles.editorLabel}>Status</label>
+              <select
+                value={editStatus}
+                onChange={(e) => setEditStatus(e.target.value)}
+                style={styles.select}
+              >
+                <option value="active">Active</option>
+                <option value="paused">Paused</option>
+                <option value="completed">Completed</option>
+                <option value="archived">Archived</option>
+              </select>
+
+              <label style={{ ...styles.editorLabel, marginTop: 16 }}>Context Text</label>
+              <div style={styles.editorHelp}>
+                This text is injected into Claude&apos;s system prompt for every chat in this project.
+                Include key decisions, constraints, architecture details, and anything Claude should know.
+              </div>
+              <textarea
+                value={editContext}
+                onChange={(e) => setEditContext(e.target.value)}
+                style={styles.editorContextTextarea}
+                rows={15}
+                placeholder="Project context..."
+              />
+
+              {editContextVersion && (
+                <div style={styles.editorVersionInfo}>
+                  Version {editContextVersion}
+                  {editContextUpdatedAt && ` · ${new Date(editContextUpdatedAt).toLocaleDateString()}`}
+                </div>
+              )}
+            </div>
+
+            <div style={styles.editorFooter}>
+              <button
+                onClick={saveProject}
+                disabled={savingProject}
+                style={{ ...styles.sendBtn, opacity: savingProject ? 0.5 : 1 }}
+              >
+                {savingProject ? "Saving..." : "Save"}
+              </button>
+              <button onClick={closeProjectEditor} style={styles.secondaryBtn}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -1443,5 +1594,112 @@ const styles = {
     color: "var(--text-muted)",
     marginTop: 6,
     paddingLeft: 2,
+  },
+
+  // Project editor
+  editBtn: {
+    background: "none",
+    border: "none",
+    color: "var(--accent)",
+    cursor: "pointer",
+    fontSize: 11,
+    padding: "0 4px",
+    textDecoration: "underline",
+    opacity: 0.7,
+  },
+  projectMetaRight: {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+  },
+  editorOverlay: {
+    position: "fixed",
+    inset: 0,
+    background: "rgba(0, 0, 0, 0.4)",
+    zIndex: 100,
+  },
+  editorPanel: {
+    position: "fixed",
+    top: 0,
+    right: 0,
+    bottom: 0,
+    width: "45%",
+    minWidth: 380,
+    maxWidth: 640,
+    background: "var(--bg-secondary)",
+    borderLeft: "1px solid var(--border)",
+    zIndex: 101,
+    display: "flex",
+    flexDirection: "column",
+    overflow: "hidden",
+  },
+  editorHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: "16px 20px",
+    borderBottom: "1px solid var(--border)",
+  },
+  editorTitle: {
+    fontSize: 16,
+    fontWeight: 700,
+    color: "var(--text-primary)",
+    margin: 0,
+  },
+  editorBody: {
+    flex: 1,
+    overflowY: "auto",
+    padding: 20,
+    display: "flex",
+    flexDirection: "column",
+    gap: 8,
+  },
+  editorLabel: {
+    fontSize: 12,
+    fontWeight: 600,
+    color: "var(--text-muted)",
+    textTransform: "uppercase",
+    letterSpacing: 1,
+    marginTop: 8,
+  },
+  editorInput: {
+    padding: "8px 12px",
+    background: "var(--bg-tertiary)",
+    border: "1px solid var(--border)",
+    borderRadius: 6,
+    color: "var(--text-primary)",
+    fontSize: 13,
+    outline: "none",
+  },
+  editorHelp: {
+    fontSize: 11,
+    color: "var(--text-muted)",
+    lineHeight: 1.5,
+    marginBottom: 4,
+  },
+  editorContextTextarea: {
+    padding: "10px 12px",
+    background: "var(--bg-tertiary)",
+    border: "1px solid var(--border)",
+    borderRadius: 6,
+    color: "var(--text-primary)",
+    fontSize: 13,
+    outline: "none",
+    resize: "vertical",
+    fontFamily: "monospace",
+    lineHeight: 1.6,
+    minHeight: 280,
+  },
+  editorVersionInfo: {
+    fontSize: 11,
+    color: "var(--text-muted)",
+    fontFamily: "monospace",
+    marginTop: 4,
+  },
+  editorFooter: {
+    display: "flex",
+    gap: 8,
+    padding: "16px 20px",
+    borderTop: "1px solid var(--border)",
   },
 };
