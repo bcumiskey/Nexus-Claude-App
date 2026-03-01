@@ -42,13 +42,12 @@ export async function POST(request) {
     const project = rows[0];
 
     // Create initial context version
-    if (context) {
-      await query(
-        `INSERT INTO project_context (project_id, context_json, version)
-         VALUES ($1, $2, 1)`,
-        [project.id, JSON.stringify(context)]
-      );
-    }
+    const contextJson = context || { decisions: [], discoveries: [], constraints: [] };
+    await query(
+      `INSERT INTO project_context (project_id, context_json, compressed_text, version)
+       VALUES ($1, $2, $3, 1)`,
+      [project.id, JSON.stringify(contextJson), goal || null]
+    );
 
     return NextResponse.json(project, { status: 201 });
   } catch (err) {
