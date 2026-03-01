@@ -5,7 +5,7 @@ import { getDefaultModel, getEnhancementModel } from "@/lib/models";
 export async function POST(request, { params }) {
   const { id } = await params;
   const body = await request.json();
-  const { content, model, enhanced } = body;
+  const { content, model, enhanced, thinking, fast } = body;
 
   if (!content) {
     return new Response(JSON.stringify({ error: "content is required" }), {
@@ -57,7 +57,8 @@ export async function POST(request, { params }) {
   // Stream response
   const messages = history.map((m) => ({ role: m.role, content: m.content }));
 
-  const stream = streamChat({ model: modelId, system, messages });
+  console.log('streamChat opts — thinking:', !!thinking, 'fast:', !!fast, 'model:', modelId);
+  const stream = streamChat({ model: modelId, system, messages, thinking: !!thinking, fast: !!fast });
 
   // Fire-and-forget: save assistant message and auto-title after stream completes
   const [readable, monitor] = stream.tee();
