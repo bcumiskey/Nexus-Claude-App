@@ -57,8 +57,10 @@ export async function POST(request, { params }) {
   // Stream response
   const messages = history.map((m) => ({ role: m.role, content: m.content }));
 
-  console.log('streamChat opts — thinking:', !!thinking, 'fast:', !!fast, 'model:', modelId);
-  const stream = streamChat({ model: modelId, system, messages, thinking: !!thinking, fast: !!fast });
+  const useThinking = thinking === true;
+  const useFast = fast === true;
+  console.log('streamChat opts —', { thinking: useThinking, fast: useFast, model: modelId, rawThinking: thinking, rawFast: fast });
+  const stream = streamChat({ model: modelId, system, messages, thinking: useThinking, fast: useFast });
 
   // Fire-and-forget: save assistant message and auto-title after stream completes
   const [readable, monitor] = stream.tee();
