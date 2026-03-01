@@ -676,7 +676,10 @@ export default function NexusChat() {
           {streaming && !streamText && (
             <div style={{ ...styles.message, ...styles.assistantMessage }}>
               <div style={styles.messageRole}>Claude</div>
-              <div style={styles.thinkingText}>Thinking...</div>
+              {thinkingEnabled
+                ? <div style={styles.thinkingText}>{"🧠"} Thinking...</div>
+                : <div style={styles.pulseDots}>{"●●●"}</div>
+              }
             </div>
           )}
 
@@ -1218,6 +1221,12 @@ const styles = {
     color: "var(--text-muted)",
     fontStyle: "italic",
     fontSize: 13,
+  },
+  pulseDots: {
+    color: "var(--accent)",
+    fontSize: 16,
+    letterSpacing: 3,
+    animation: "pulse 1.2s ease-in-out infinite",
   },
 
   // Error
