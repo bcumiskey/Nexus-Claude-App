@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { query } from "@/lib/db";
+import { updateCompressedText } from "@/lib/context";
 
 export async function GET(request, { params }) {
   try {
@@ -46,7 +47,7 @@ export async function PATCH(request, { params }) {
       }
     }
 
-    if (fields.length === 0 && !body.context) {
+    if (fields.length === 0 && !body.context && !body.compressed_text) {
       return NextResponse.json({ error: "No fields to update" }, { status: 400 });
     }
 
@@ -63,6 +64,9 @@ export async function PATCH(request, { params }) {
     }
 
     // Update context if provided
+    if (body.compressed_text) {
+      await updateCompressedText(id, body.compressed_text, "nexus");
+    }
     if (body.context) {
       const latest = await query(
         "SELECT version FROM project_context WHERE project_id = $1 ORDER BY version DESC LIMIT 1",
