@@ -55,12 +55,14 @@ function streamMessage(chatId, content, opts, onText, onDone, onError) {
 // ── Format helpers ──
 
 function formatCost(usd) {
+  usd = Number(usd);
   if (!usd || usd === 0) return "$0.00";
   if (usd < 0.01) return `$${usd.toFixed(4)}`;
   return `$${usd.toFixed(2)}`;
 }
 
 function formatTime(ms) {
+  ms = Number(ms);
   if (!ms) return "";
   return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
 }
