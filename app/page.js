@@ -113,6 +113,8 @@ export default function NexusChat() {
   const [newProjectName, setNewProjectName] = useState("");
   const [newProjectGoal, setNewProjectGoal] = useState("");
   const [creatingProject, setCreatingProject] = useState(false);
+  const [expandedProject, setExpandedProject] = useState(null);
+  const [showAllChats, setShowAllChats] = useState(false);
 
   const endRef = useRef(null);
   const taRef = useRef(null);
@@ -335,10 +337,13 @@ export default function NexusChat() {
     }
   }
 
-  const filteredChats = chats.filter((c) =>
-    c.title.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const filteredChats = chats.filter((c) => {
+    if (!c.title.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+    if (selectedProject && !showAllChats) return c.project_id === selectedProject;
+    return true;
+  });
 
+  const projectName = (id) => projects.find((p) => p.id === id)?.name;
   const currentModel = models.find((m) => m.id === selectedModel);
 
   return (
@@ -384,6 +389,20 @@ export default function NexusChat() {
                 style={styles.searchInput}
               />
 
+              {selectedProject && (
+                <div style={styles.filterBar}>
+                  <span style={styles.filterLabel}>
+                    {showAllChats ? "All chats" : `Filtered: ${projectName(selectedProject) || "project"}`}
+                  </span>
+                  <button
+                    onClick={() => setShowAllChats((v) => !v)}
+                    style={styles.filterToggle}
+                  >
+                    {showAllChats ? "filter" : "show all"}
+                  </button>
+                </div>
+              )}
+
               <div style={styles.chatList}>
                 {filteredChats.map((chat) => (
                   <div
@@ -405,10 +424,15 @@ export default function NexusChat() {
                         x
                       </button>
                     </div>
+                    {chat.project_id && (
+                      <div style={styles.chatProjectBadge}>{projectName(chat.project_id) || "project"}</div>
+                    )}
                   </div>
                 ))}
                 {filteredChats.length === 0 && (
-                  <div style={styles.emptyState}>No chats yet</div>
+                  <div style={styles.emptyState}>
+                    {selectedProject && !showAllChats ? "No chats in this project" : "No chats yet"}
+                  </div>
                 )}
               </div>
             </>
@@ -461,28 +485,62 @@ export default function NexusChat() {
               )}
 
               <div style={styles.chatList}>
-                {projects.map((p) => (
-                  <div
-                    key={p.id}
-                    onClick={() => setSelectedProject(selectedProject === p.id ? null : p.id)}
-                    style={{
-                      ...styles.chatItem,
-                      ...(selectedProject === p.id ? styles.chatItemActive : {}),
-                    }}
-                  >
-                    <div style={styles.chatTitle}>{p.name}</div>
-                    <div style={styles.chatMeta}>
-                      <span>
-                        <span style={styles.projectStatusDot(p.status)} />
-                        {p.status || "active"}
-                      </span>
-                      <span>{Number(p.chat_count) || 0} chats</span>
+                {projects.map((p) => {
+                  const isExpanded = expandedProject === p.id;
+                  const projectChats = chats.filter((c) => c.project_id === p.id);
+                  return (
+                    <div key={p.id}>
+                      <div
+                        onClick={() => {
+                          setSelectedProject(selectedProject === p.id ? null : p.id);
+                          setExpandedProject(isExpanded ? null : p.id);
+                          setShowAllChats(false);
+                        }}
+                        style={{
+                          ...styles.chatItem,
+                          ...(selectedProject === p.id ? styles.chatItemActive : {}),
+                        }}
+                      >
+                        <div style={styles.chatTitle}>
+                          <span style={styles.expandArrow}>{isExpanded ? "\u25BE" : "\u25B8"}</span>
+                          {p.name}
+                        </div>
+                        <div style={styles.chatMeta}>
+                          <span>
+                            <span style={styles.projectStatusDot(p.status)} />
+                            {p.status || "active"}
+                          </span>
+                          <span>{Number(p.chat_count) || 0} chats</span>
+                        </div>
+                        {p.goal && (
+                          <div style={styles.projectGoal}>{p.goal}</div>
+                        )}
+                      </div>
+                      {isExpanded && (
+                        <div style={styles.subChatList}>
+                          {projectChats.map((chat) => (
+                            <div
+                              key={chat.id}
+                              onClick={() => { loadChat(chat.id); setSidebarTab("chats"); setShowAllChats(false); }}
+                              style={{
+                                ...styles.subChatItem,
+                                ...(activeChat?.id === chat.id ? styles.chatItemActive : {}),
+                              }}
+                            >
+                              <div style={styles.chatTitle}>{chat.title}</div>
+                              <div style={{ ...styles.chatMeta, marginTop: 2 }}>
+                                {chat.message_count || 0} messages
+                              </div>
+                            </div>
+                          ))}
+                          {projectChats.length === 0 && (
+                            <div style={styles.subChatEmpty}>No chats yet</div>
+                          )}
+                        </div>
+                      )}
                     </div>
-                    {p.goal && (
-                      <div style={styles.projectGoal}>{p.goal}</div>
-                    )}
-                  </div>
-                ))}
+                  );
+                })}
                 {projects.length === 0 && (
                   <div style={styles.emptyState}>No projects yet</div>
                 )}
@@ -840,6 +898,68 @@ const styles = {
     overflow: "hidden",
     textOverflow: "ellipsis",
     whiteSpace: "nowrap",
+  },
+  chatProjectBadge: {
+    fontSize: 10,
+    color: "var(--accent)",
+    background: "var(--accent-glow)",
+    padding: "1px 6px",
+    borderRadius: 3,
+    marginTop: 4,
+    display: "inline-block",
+    fontWeight: 500,
+  },
+  filterBar: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    margin: "0 16px 6px",
+    padding: "4px 8px",
+    background: "var(--accent-glow)",
+    borderRadius: 4,
+    fontSize: 11,
+  },
+  filterLabel: {
+    color: "var(--accent)",
+    fontWeight: 500,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
+  filterToggle: {
+    background: "none",
+    border: "none",
+    color: "var(--text-muted)",
+    cursor: "pointer",
+    fontSize: 11,
+    textDecoration: "underline",
+    flexShrink: 0,
+    padding: "0 2px",
+  },
+  expandArrow: {
+    marginRight: 4,
+    fontSize: 10,
+    display: "inline-block",
+    width: 12,
+  },
+  subChatList: {
+    paddingLeft: 16,
+    borderLeft: "1px solid var(--border)",
+    marginLeft: 18,
+    marginBottom: 4,
+  },
+  subChatItem: {
+    padding: "6px 10px",
+    borderRadius: 5,
+    cursor: "pointer",
+    marginBottom: 1,
+    transition: "background 0.15s",
+  },
+  subChatEmpty: {
+    fontSize: 11,
+    color: "var(--text-muted)",
+    padding: "6px 10px",
+    fontStyle: "italic",
   },
   projectStatusDot: (status) => ({
     display: "inline-block",
