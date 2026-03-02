@@ -128,6 +128,8 @@ export default function NexusChat() {
   const [editContextVersion, setEditContextVersion] = useState(null);
   const [editContextUpdatedAt, setEditContextUpdatedAt] = useState(null);
   const [savingProject, setSavingProject] = useState(false);
+  const [copiedMessageIdx, setCopiedMessageIdx] = useState(null);
+  const [hoveredMessageIdx, setHoveredMessageIdx] = useState(null);
 
   const endRef = useRef(null);
   const taRef = useRef(null);
@@ -736,7 +738,12 @@ export default function NexusChat() {
           )}
 
           {messages.map((msg, i) => (
-            <div key={i} style={{ ...styles.message, ...(msg.role === "user" ? styles.userMessage : styles.assistantMessage) }}>
+            <div
+              key={i}
+              style={{ ...styles.message, ...(msg.role === "user" ? styles.userMessage : styles.assistantMessage), position: "relative" }}
+              onMouseEnter={() => setHoveredMessageIdx(i)}
+              onMouseLeave={() => setHoveredMessageIdx(null)}
+            >
               <div style={styles.messageRole}>
                 {msg.role === "user" ? "You" : "Claude"}
                 {msg.enhanced && <span style={styles.enhancedBadge}>enhanced</span>}
@@ -759,6 +766,19 @@ export default function NexusChat() {
                 <div style={styles.messageMeta}>
                   {msg.model_used} | {msg.tokens_in?.toLocaleString()} in / {msg.tokens_out?.toLocaleString()} out | {formatCost(msg.cost_usd)} | {formatTime(msg.duration_ms)}
                 </div>
+              )}
+              {msg.role === "assistant" && hoveredMessageIdx === i && (
+                <button
+                  onClick={async () => {
+                    await navigator.clipboard.writeText(msg.content);
+                    setCopiedMessageIdx(i);
+                    setTimeout(() => setCopiedMessageIdx(null), 2000);
+                  }}
+                  style={styles.copyBtn}
+                  title="Copy message"
+                >
+                  {copiedMessageIdx === i ? "\u2713" : "\u2398"}
+                </button>
               )}
             </div>
           ))}
@@ -1407,6 +1427,20 @@ const styles = {
     background: "var(--accent)",
     marginTop: 8,
     animation: "pulse 1s ease-in-out infinite",
+  },
+  copyBtn: {
+    position: "absolute",
+    top: 8,
+    right: 8,
+    background: "var(--bg-tertiary)",
+    border: "1px solid var(--border)",
+    borderRadius: 4,
+    color: "var(--text-muted)",
+    cursor: "pointer",
+    fontSize: 14,
+    padding: "4px 8px",
+    lineHeight: 1,
+    transition: "all 0.15s",
   },
   thinkingText: {
     color: "var(--text-muted)",
