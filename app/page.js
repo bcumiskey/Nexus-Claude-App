@@ -23,7 +23,7 @@ function streamMessage(chatId, content, opts, onText, onDone, onError, onThinkin
       const res = await fetch(`/api/chat/${chatId}/send`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content, model: opts.model, enhanced: opts.enhanced || false, thinking: opts.thinking || false, fast: opts.fast || false }),
+        body: JSON.stringify({ content, model: opts.model, enhanced: opts.enhanced || false, thinking: opts.thinking || false, fast: opts.fast || false, regenerate: opts.regenerate || false, editMessageId: opts.editMessageId || null, editContent: opts.editContent || null }),
         signal: controller.signal,
       });
       const reader = res.body.getReader();
@@ -429,6 +429,61 @@ export default function NexusChat() {
       }
     );
   }, [input, streaming, activeChat, selectedModel, selectedProject, enhanceResult, thinkingEnabled, fastEnabled]);
+
+  async function handleRegenerate() {
+    if (streaming || !activeChat?.id) return;
+    const lastAssistantIdx = messages.length - 1;
+    if (lastAssistantIdx < 0 || messages[lastAssistantIdx].role !== "assistant") return;
+
+    setMessages((prev) => prev.slice(0, -1));
+    setStreaming(true);
+    setStreamText("");
+    setThinkingStreamText("");
+    thinkingRef.current = "";
+    setError(null);
+
+    abortRef.current = streamMessage(
+      activeChat.id,
+      null,
+      { model: selectedModel, thinking: thinkingEnabled, fast: fastEnabled, regenerate: true },
+      (text) => {
+        setThinkingStreamText("");
+        setStreamText((prev) => prev + text);
+      },
+      (data) => {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: data.fullText,
+            thinking: thinkingRef.current || null,
+            model_used: data.model,
+            tokens_in: data.usage.input_tokens,
+            tokens_out: data.usage.output_tokens,
+            cost_usd: data.cost,
+            duration_ms: data.durationMs,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+        setStreamText("");
+        setThinkingStreamText("");
+        setStreaming(false);
+        loadChats();
+      },
+      (err) => {
+        setError(err.message);
+        setStreaming(false);
+        setStreamText("");
+        setThinkingStreamText("");
+      },
+      (text) => {
+        if (text !== null) {
+          thinkingRef.current += text;
+          setThinkingStreamText((prev) => prev + text);
+        }
+      }
+    );
+  }
 
   async function handleEnhance() {
     if (!input.trim() || enhancing) return;
@@ -887,6 +942,14 @@ export default function NexusChat() {
                   title="Copy message"
                 >
                   {copiedMessageIdx === i ? "\u2713" : "\u2398"}
+                </button>
+              )}
+              {msg.role === "assistant" && i === messages.length - 1 && !streaming && (
+                <button
+                  onClick={handleRegenerate}
+                  style={styles.regenerateBtn}
+                >
+                  {"\uD83D\uDD04"} Regenerate
                 </button>
               )}
             </div>
@@ -1569,6 +1632,17 @@ const styles = {
     background: "var(--accent)",
     marginTop: 8,
     animation: "pulse 1s ease-in-out infinite",
+  },
+  regenerateBtn: {
+    marginTop: 8,
+    padding: "4px 12px",
+    background: "none",
+    border: "1px solid var(--border)",
+    borderRadius: 5,
+    color: "var(--text-muted)",
+    cursor: "pointer",
+    fontSize: 12,
+    transition: "all 0.15s",
   },
   copyBtn: {
     position: "absolute",
