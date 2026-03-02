@@ -650,13 +650,24 @@ export default function NexusChat() {
                 + New Chat
               </button>
 
-              <input
-                type="text"
-                placeholder="Search chats..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                style={styles.searchInput}
-              />
+              <div style={{ position: "relative", margin: "0 16px 8px" }}>
+                <input
+                  type="text"
+                  placeholder="Search chats..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  style={styles.searchInput}
+                />
+                {searchQuery && (
+                  <button
+                    onClick={() => setSearchQuery("")}
+                    style={styles.searchClearBtn}
+                    title="Clear search"
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
 
               {selectedProject && (
                 <div style={styles.filterBar}>
@@ -1344,14 +1355,29 @@ const styles = {
     fontSize: 14,
   },
   searchInput: {
-    margin: "0 16px 8px",
-    padding: "8px 12px",
+    width: "100%",
+    boxSizing: "border-box",
+    padding: "8px 28px 8px 12px",
     background: "var(--bg-tertiary)",
     border: "1px solid var(--border)",
     borderRadius: 6,
     color: "var(--text-primary)",
     fontSize: 13,
     outline: "none",
+    margin: 0,
+  },
+  searchClearBtn: {
+    position: "absolute",
+    right: 6,
+    top: "50%",
+    transform: "translateY(-50%)",
+    background: "none",
+    border: "none",
+    color: "var(--text-secondary)",
+    cursor: "pointer",
+    fontSize: 16,
+    padding: "0 4px",
+    lineHeight: 1,
   },
   chatList: {
     flex: 1,
