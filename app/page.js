@@ -608,7 +608,7 @@ export default function NexusChat() {
                               style={styles.editBtn}
                               title="Edit project"
                             >
-                              Edit
+                              {"\u270E"}
                             </button>
                             {Number(p.chat_count) || 0} chats
                           </span>
@@ -1600,12 +1600,12 @@ const styles = {
   editBtn: {
     background: "none",
     border: "none",
-    color: "var(--accent)",
+    color: "var(--text-muted)",
     cursor: "pointer",
-    fontSize: 11,
-    padding: "0 4px",
-    textDecoration: "underline",
-    opacity: 0.7,
+    fontSize: 13,
+    padding: "2px 4px",
+    opacity: 0.6,
+    transition: "opacity 0.15s",
   },
   projectMetaRight: {
     display: "flex",
