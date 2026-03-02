@@ -150,8 +150,10 @@ export default function NexusChat() {
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   const [editingMessageIdx, setEditingMessageIdx] = useState(null);
   const [editMessageValue, setEditMessageValue] = useState("");
+  const [isAtBottom, setIsAtBottom] = useState(true);
 
   const endRef = useRef(null);
+  const messagesAreaRef = useRef(null);
   const taRef = useRef(null);
   const abortRef = useRef(null);
   const thinkingRef = useRef("");
@@ -163,10 +165,23 @@ export default function NexusChat() {
     loadProjects();
   }, []);
 
-  // ── Auto-scroll ──
+  // ── Track scroll position with IntersectionObserver ──
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streamText]);
+    if (!endRef.current) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => setIsAtBottom(entry.isIntersecting),
+      { threshold: 0.1 }
+    );
+    observer.observe(endRef.current);
+    return () => observer.disconnect();
+  }, []);
+
+  // ── Auto-scroll when at bottom ──
+  useEffect(() => {
+    if (isAtBottom) {
+      endRef.current?.scrollIntoView({ behavior: "instant" });
+    }
+  }, [messages, streamText, isAtBottom]);
 
   // ── Auto-disable capability toggles on model change ──
   useEffect(() => {
@@ -954,7 +969,7 @@ export default function NexusChat() {
         </div>
 
         {/* Messages area */}
-        <div style={styles.messagesArea}>
+        <div style={{ ...styles.messagesArea, position: "relative" }} ref={messagesAreaRef}>
           {messages.length === 0 && !streaming && (
             <div style={styles.welcome}>
               <h2 style={styles.welcomeTitle}>Nexus</h2>
@@ -1088,6 +1103,19 @@ export default function NexusChat() {
 
           <div ref={endRef} />
         </div>
+
+        {!isAtBottom && (
+          <button
+            onClick={() => {
+              endRef.current?.scrollIntoView({ behavior: "smooth" });
+              setIsAtBottom(true);
+            }}
+            style={styles.scrollToBottom}
+            aria-label="Scroll to bottom"
+          >
+            {"\u2193"}
+          </button>
+        )}
 
         {/* Error banner */}
         {error && (
@@ -1556,6 +1584,7 @@ const styles = {
     display: "flex",
     flexDirection: "column",
     overflow: "hidden",
+    position: "relative",
   },
   topBar: {
     display: "flex",
@@ -1729,6 +1758,26 @@ const styles = {
     background: "var(--accent)",
     marginTop: 8,
     animation: "pulse 1s ease-in-out infinite",
+  },
+  scrollToBottom: {
+    position: "absolute",
+    bottom: 80,
+    left: "50%",
+    transform: "translateX(-50%)",
+    background: "var(--bg-tertiary)",
+    border: "1px solid var(--border)",
+    borderRadius: "50%",
+    width: 36,
+    height: 36,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    cursor: "pointer",
+    fontSize: 18,
+    color: "var(--text-primary)",
+    boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+    zIndex: 10,
+    transition: "all 0.15s",
   },
   regenerateBtn: {
     marginTop: 8,
