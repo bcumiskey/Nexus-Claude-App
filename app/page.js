@@ -147,6 +147,7 @@ export default function NexusChat() {
   const [renameValue, setRenameValue] = useState("");
   const [chatMenuId, setChatMenuId] = useState(null);
   const [hoveredChatId, setHoveredChatId] = useState(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
 
   const endRef = useRef(null);
   const taRef = useRef(null);
@@ -254,9 +255,15 @@ export default function NexusChat() {
     try {
       await fetchJSON(`/chat/${id}`, { method: "DELETE" });
       if (activeChat?.id === id) {
-        setActiveChat(null);
-        setMessages([]);
+        const remaining = chats.filter((c) => c.id !== id);
+        if (remaining.length > 0) {
+          loadChat(remaining[0].id);
+        } else {
+          setActiveChat(null);
+          setMessages([]);
+        }
       }
+      setConfirmDeleteId(null);
       await loadChats();
     } catch (err) {
       setError("Failed to delete chat: " + err.message);
@@ -593,12 +600,30 @@ export default function NexusChat() {
                         >
                           Rename
                         </button>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); setChatMenuId(null); deleteChat(chat.id); }}
-                          style={{ ...styles.chatMenuItem, color: "var(--danger)" }}
-                        >
-                          Delete
-                        </button>
+                        {confirmDeleteId === chat.id ? (
+                          <div style={{ display: "flex", alignItems: "center", padding: "6px 12px", gap: 6, fontSize: 12 }}>
+                            <span style={{ color: "var(--danger)" }}>Delete?</span>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); setChatMenuId(null); deleteChat(chat.id); }}
+                              style={{ ...styles.chatMenuItem, padding: "4px 8px", color: "var(--danger)", fontWeight: 600 }}
+                            >
+                              Yes
+                            </button>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); setConfirmDeleteId(null); }}
+                              style={{ ...styles.chatMenuItem, padding: "4px 8px" }}
+                            >
+                              No
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setConfirmDeleteId(chat.id); }}
+                            style={{ ...styles.chatMenuItem, color: "var(--danger)" }}
+                          >
+                            Delete
+                          </button>
+                        )}
                       </div>
                     )}
                     {chat.project_id && (
