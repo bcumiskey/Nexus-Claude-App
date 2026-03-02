@@ -143,6 +143,10 @@ export default function NexusChat() {
   const [savingProject, setSavingProject] = useState(false);
   const [copiedMessageIdx, setCopiedMessageIdx] = useState(null);
   const [hoveredMessageIdx, setHoveredMessageIdx] = useState(null);
+  const [renamingChatId, setRenamingChatId] = useState(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [chatMenuId, setChatMenuId] = useState(null);
+  const [hoveredChatId, setHoveredChatId] = useState(null);
 
   const endRef = useRef(null);
   const taRef = useRef(null);
@@ -256,6 +260,20 @@ export default function NexusChat() {
       await loadChats();
     } catch (err) {
       setError("Failed to delete chat: " + err.message);
+    }
+  }
+
+  async function renameChat(id, newTitle) {
+    const trimmed = newTitle.trim();
+    if (!trimmed || trimmed.length > 100) return;
+    // Optimistic update
+    setChats((prev) => prev.map((c) => (c.id === id ? { ...c, title: trimmed } : c)));
+    setRenamingChatId(null);
+    try {
+      await fetchJSON(`/chat/${id}`, { method: "PATCH", body: JSON.stringify({ title: trimmed }) });
+    } catch (err) {
+      setError("Failed to rename chat: " + err.message);
+      await loadChats();
     }
   }
 
@@ -514,23 +532,75 @@ export default function NexusChat() {
                 {filteredChats.map((chat) => (
                   <div
                     key={chat.id}
-                    onClick={() => loadChat(chat.id)}
+                    onClick={() => { if (renamingChatId !== chat.id) loadChat(chat.id); }}
+                    onMouseEnter={() => setHoveredChatId(chat.id)}
+                    onMouseLeave={() => { setHoveredChatId(null); if (chatMenuId === chat.id) setChatMenuId(null); }}
                     style={{
                       ...styles.chatItem,
                       ...(activeChat?.id === chat.id ? styles.chatItemActive : {}),
+                      position: "relative",
                     }}
                   >
-                    <div style={styles.chatTitle}>{chat.title}</div>
+                    {renamingChatId === chat.id ? (
+                      <input
+                        type="text"
+                        value={renameValue}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") renameChat(chat.id, renameValue);
+                          if (e.key === "Escape") setRenamingChatId(null);
+                        }}
+                        onBlur={() => renameChat(chat.id, renameValue)}
+                        autoFocus
+                        maxLength={100}
+                        style={{ ...styles.searchInput, margin: 0, width: "100%", fontSize: 13, padding: "4px 8px" }}
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    ) : (
+                      <div
+                        style={styles.chatTitle}
+                        onDoubleClick={(e) => {
+                          e.stopPropagation();
+                          setRenamingChatId(chat.id);
+                          setRenameValue(chat.title);
+                        }}
+                      >
+                        {chat.title}
+                      </div>
+                    )}
                     <div style={styles.chatMeta}>
                       {chat.message_count || 0} messages
-                      <button
-                        onClick={(e) => { e.stopPropagation(); deleteChat(chat.id); }}
-                        style={styles.deleteBtn}
-                        title="Delete chat"
-                      >
-                        x
-                      </button>
+                      {hoveredChatId === chat.id && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setChatMenuId(chatMenuId === chat.id ? null : chat.id); }}
+                          style={styles.overflowBtn}
+                          title="Chat options"
+                        >
+                          {"\u22EF"}
+                        </button>
+                      )}
                     </div>
+                    {chatMenuId === chat.id && (
+                      <div style={styles.chatMenu}>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setChatMenuId(null);
+                            setRenamingChatId(chat.id);
+                            setRenameValue(chat.title);
+                          }}
+                          style={styles.chatMenuItem}
+                        >
+                          Rename
+                        </button>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setChatMenuId(null); deleteChat(chat.id); }}
+                          style={{ ...styles.chatMenuItem, color: "var(--danger)" }}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    )}
                     {chat.project_id && (
                       <div style={styles.chatProjectBadge}>{projectName(chat.project_id) || "project"}</div>
                     )}
@@ -1109,6 +1179,38 @@ const styles = {
     fontSize: 12,
     padding: "0 4px",
     opacity: 0.5,
+  },
+  overflowBtn: {
+    background: "none",
+    border: "none",
+    color: "var(--text-muted)",
+    cursor: "pointer",
+    fontSize: 16,
+    padding: "0 4px",
+    lineHeight: 1,
+  },
+  chatMenu: {
+    position: "absolute",
+    top: "100%",
+    right: 4,
+    background: "var(--bg-secondary)",
+    border: "1px solid var(--border)",
+    borderRadius: 6,
+    boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+    zIndex: 20,
+    minWidth: 100,
+    overflow: "hidden",
+  },
+  chatMenuItem: {
+    display: "block",
+    width: "100%",
+    padding: "8px 12px",
+    background: "none",
+    border: "none",
+    color: "var(--text-primary)",
+    cursor: "pointer",
+    fontSize: 12,
+    textAlign: "left",
   },
   emptyState: {
     color: "var(--text-muted)",
