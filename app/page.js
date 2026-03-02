@@ -148,6 +148,8 @@ export default function NexusChat() {
   const [chatMenuId, setChatMenuId] = useState(null);
   const [hoveredChatId, setHoveredChatId] = useState(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [editingMessageIdx, setEditingMessageIdx] = useState(null);
+  const [editMessageValue, setEditMessageValue] = useState("");
 
   const endRef = useRef(null);
   const taRef = useRef(null);
@@ -446,6 +448,71 @@ export default function NexusChat() {
       activeChat.id,
       null,
       { model: selectedModel, thinking: thinkingEnabled, fast: fastEnabled, regenerate: true },
+      (text) => {
+        setThinkingStreamText("");
+        setStreamText((prev) => prev + text);
+      },
+      (data) => {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: data.fullText,
+            thinking: thinkingRef.current || null,
+            model_used: data.model,
+            tokens_in: data.usage.input_tokens,
+            tokens_out: data.usage.output_tokens,
+            cost_usd: data.cost,
+            duration_ms: data.durationMs,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+        setStreamText("");
+        setThinkingStreamText("");
+        setStreaming(false);
+        loadChats();
+      },
+      (err) => {
+        setError(err.message);
+        setStreaming(false);
+        setStreamText("");
+        setThinkingStreamText("");
+      },
+      (text) => {
+        if (text !== null) {
+          thinkingRef.current += text;
+          setThinkingStreamText((prev) => prev + text);
+        }
+      }
+    );
+  }
+
+  async function handleEditSubmit(idx) {
+    if (streaming || !activeChat?.id) return;
+    const trimmed = editMessageValue.trim();
+    if (!trimmed) return;
+    const msg = messages[idx];
+    const messagesAfter = messages.length - idx - 1;
+
+    // Truncate messages in state to just up to and including the edited message
+    setMessages((prev) => prev.slice(0, idx).concat([{ ...prev[idx], content: trimmed }]));
+    setEditingMessageIdx(null);
+    setStreaming(true);
+    setStreamText("");
+    setThinkingStreamText("");
+    thinkingRef.current = "";
+    setError(null);
+
+    abortRef.current = streamMessage(
+      activeChat.id,
+      null,
+      {
+        model: selectedModel,
+        thinking: thinkingEnabled,
+        fast: fastEnabled,
+        editMessageId: msg.id,
+        editContent: trimmed,
+      },
       (text) => {
         setThinkingStreamText("");
         setStreamText((prev) => prev + text);
@@ -921,28 +988,58 @@ export default function NexusChat() {
                   </div>
                 </details>
               )}
-              <div
-                style={styles.messageContent}
-                onClick={handleCodeCopyClick}
-                dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }}
-              />
+              {editingMessageIdx === i ? (
+                <div>
+                  <textarea
+                    value={editMessageValue}
+                    onChange={(e) => setEditMessageValue(e.target.value)}
+                    style={{ ...styles.textarea, width: "100%", minHeight: 80 }}
+                    autoFocus
+                  />
+                  <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                    <button onClick={() => handleEditSubmit(i)} style={{ ...styles.sendBtn, fontSize: 12, padding: "6px 12px" }}>
+                      Save & Submit
+                    </button>
+                    <button onClick={() => setEditingMessageIdx(null)} style={{ ...styles.secondaryBtn, fontSize: 12, padding: "6px 12px" }}>
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div
+                  style={styles.messageContent}
+                  onClick={handleCodeCopyClick}
+                  dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }}
+                />
+              )}
               {msg.role === "assistant" && msg.tokens_in && (
                 <div style={styles.messageMeta}>
                   {msg.model_used} | {msg.tokens_in?.toLocaleString()} in / {msg.tokens_out?.toLocaleString()} out | {formatCost(msg.cost_usd)} | {formatTime(msg.duration_ms)}
                 </div>
               )}
-              {msg.role === "assistant" && hoveredMessageIdx === i && (
-                <button
-                  onClick={async () => {
-                    await navigator.clipboard.writeText(msg.content);
-                    setCopiedMessageIdx(i);
-                    setTimeout(() => setCopiedMessageIdx(null), 2000);
-                  }}
-                  style={styles.copyBtn}
-                  title="Copy message"
-                >
-                  {copiedMessageIdx === i ? "\u2713" : "\u2398"}
-                </button>
+              {hoveredMessageIdx === i && editingMessageIdx !== i && (
+                <div style={styles.messageActions}>
+                  {msg.role === "user" && (
+                    <button
+                      onClick={() => { setEditingMessageIdx(i); setEditMessageValue(msg.content); }}
+                      style={styles.actionBtn}
+                      title="Edit message"
+                    >
+                      {"\u270E"}
+                    </button>
+                  )}
+                  <button
+                    onClick={async () => {
+                      await navigator.clipboard.writeText(msg.content);
+                      setCopiedMessageIdx(i);
+                      setTimeout(() => setCopiedMessageIdx(null), 2000);
+                    }}
+                    style={styles.actionBtn}
+                    title="Copy message"
+                  >
+                    {copiedMessageIdx === i ? "\u2713" : "\u2398"}
+                  </button>
+                </div>
               )}
               {msg.role === "assistant" && i === messages.length - 1 && !streaming && (
                 <button
@@ -1644,16 +1741,20 @@ const styles = {
     fontSize: 12,
     transition: "all 0.15s",
   },
-  copyBtn: {
+  messageActions: {
     position: "absolute",
     top: 8,
     right: 8,
+    display: "flex",
+    gap: 4,
+  },
+  actionBtn: {
     background: "var(--bg-tertiary)",
     border: "1px solid var(--border)",
     borderRadius: 4,
     color: "var(--text-muted)",
     cursor: "pointer",
-    fontSize: 14,
+    fontSize: 13,
     padding: "4px 8px",
     lineHeight: 1,
     transition: "all 0.15s",
