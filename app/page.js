@@ -71,9 +71,10 @@ function formatTime(ms) {
 
 function renderMarkdown(text) {
   if (!text) return "";
-  // Code blocks
+  // Code blocks with language header and copy button
   let html = text.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
-    return `<pre><code class="${lang}">${escapeHtml(code.trim())}</code></pre>`;
+    const langLabel = lang || "code";
+    return `<div class="code-block-wrap" style="border-radius:6px;overflow:hidden;margin:8px 0;border:1px solid var(--border)"><div class="code-block-header" style="display:flex;align-items:center;justify-content:space-between;padding:4px 12px;background:var(--bg-tertiary);border-bottom:1px solid var(--border);font-size:11px"><span style="color:var(--text-muted)">${escapeHtml(langLabel)}</span><button class="code-copy-btn" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:11px;padding:2px 6px">Copy</button></div><pre style="margin:0;padding:12px;overflow-x:auto;background:var(--bg-primary)"><code class="${lang}">${escapeHtml(code.trim())}</code></pre></div>`;
   });
   // Inline code
   html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
@@ -84,6 +85,18 @@ function renderMarkdown(text) {
   // Line breaks
   html = html.replace(/\n/g, "<br>");
   return html;
+}
+
+function handleCodeCopyClick(e) {
+  const btn = e.target.closest(".code-copy-btn");
+  if (!btn) return;
+  const wrap = btn.closest(".code-block-wrap");
+  const pre = wrap?.querySelector("pre");
+  if (pre) {
+    navigator.clipboard.writeText(pre.textContent);
+    btn.textContent = "Copied!";
+    setTimeout(() => { btn.textContent = "Copy"; }, 2000);
+  }
 }
 
 function escapeHtml(str) {
@@ -760,6 +773,7 @@ export default function NexusChat() {
               )}
               <div
                 style={styles.messageContent}
+                onClick={handleCodeCopyClick}
                 dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }}
               />
               {msg.role === "assistant" && msg.tokens_in && (
@@ -788,6 +802,7 @@ export default function NexusChat() {
               <div style={styles.messageRole}>Claude</div>
               <div
                 style={styles.messageContent}
+                onClick={handleCodeCopyClick}
                 dangerouslySetInnerHTML={{ __html: renderMarkdown(streamText) }}
               />
               <div style={styles.streamingDot} />
