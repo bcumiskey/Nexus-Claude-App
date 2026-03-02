@@ -23,7 +23,7 @@ function streamMessage(chatId, content, opts, onText, onDone, onError, onThinkin
       const res = await fetch(`/api/chat/${chatId}/send`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content, model: opts.model, enhanced: opts.enhanced || false, thinking: opts.thinking || false, fast: opts.fast || false }),
+        body: JSON.stringify({ content, model: opts.model, enhanced: opts.enhanced || false, thinking: opts.thinking || false, fast: opts.fast || false, regenerate: opts.regenerate || false, editMessageId: opts.editMessageId || null, editContent: opts.editContent || null }),
         signal: controller.signal,
       });
       const reader = res.body.getReader();
@@ -71,9 +71,10 @@ function formatTime(ms) {
 
 function renderMarkdown(text) {
   if (!text) return "";
-  // Code blocks
+  // Code blocks with language header and copy button
   let html = text.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
-    return `<pre><code class="${lang}">${escapeHtml(code.trim())}</code></pre>`;
+    const langLabel = lang || "code";
+    return `<div class="code-block-wrap" style="border-radius:6px;overflow:hidden;margin:8px 0;border:1px solid var(--border)"><div class="code-block-header" style="display:flex;align-items:center;justify-content:space-between;padding:4px 12px;background:var(--bg-tertiary);border-bottom:1px solid var(--border);font-size:11px"><span style="color:var(--text-muted)">${escapeHtml(langLabel)}</span><button class="code-copy-btn" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:11px;padding:2px 6px">Copy</button></div><pre style="margin:0;padding:12px;overflow-x:auto;background:var(--bg-primary)"><code class="${lang}">${escapeHtml(code.trim())}</code></pre></div>`;
   });
   // Inline code
   html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
@@ -84,6 +85,18 @@ function renderMarkdown(text) {
   // Line breaks
   html = html.replace(/\n/g, "<br>");
   return html;
+}
+
+function handleCodeCopyClick(e) {
+  const btn = e.target.closest(".code-copy-btn");
+  if (!btn) return;
+  const wrap = btn.closest(".code-block-wrap");
+  const pre = wrap?.querySelector("pre");
+  if (pre) {
+    navigator.clipboard.writeText(pre.textContent);
+    btn.textContent = "Copied!";
+    setTimeout(() => { btn.textContent = "Copy"; }, 2000);
+  }
 }
 
 function escapeHtml(str) {
@@ -128,8 +141,19 @@ export default function NexusChat() {
   const [editContextVersion, setEditContextVersion] = useState(null);
   const [editContextUpdatedAt, setEditContextUpdatedAt] = useState(null);
   const [savingProject, setSavingProject] = useState(false);
+  const [copiedMessageIdx, setCopiedMessageIdx] = useState(null);
+  const [hoveredMessageIdx, setHoveredMessageIdx] = useState(null);
+  const [renamingChatId, setRenamingChatId] = useState(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [chatMenuId, setChatMenuId] = useState(null);
+  const [hoveredChatId, setHoveredChatId] = useState(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [editingMessageIdx, setEditingMessageIdx] = useState(null);
+  const [editMessageValue, setEditMessageValue] = useState("");
+  const [isAtBottom, setIsAtBottom] = useState(true);
 
   const endRef = useRef(null);
+  const messagesAreaRef = useRef(null);
   const taRef = useRef(null);
   const abortRef = useRef(null);
   const thinkingRef = useRef("");
@@ -141,10 +165,23 @@ export default function NexusChat() {
     loadProjects();
   }, []);
 
-  // ── Auto-scroll ──
+  // ── Track scroll position with IntersectionObserver ──
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streamText]);
+    if (!endRef.current) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => setIsAtBottom(entry.isIntersecting),
+      { threshold: 0.1 }
+    );
+    observer.observe(endRef.current);
+    return () => observer.disconnect();
+  }, []);
+
+  // ── Auto-scroll when at bottom ──
+  useEffect(() => {
+    if (isAtBottom) {
+      endRef.current?.scrollIntoView({ behavior: "instant" });
+    }
+  }, [messages, streamText, isAtBottom]);
 
   // ── Auto-disable capability toggles on model change ──
   useEffect(() => {
@@ -235,12 +272,32 @@ export default function NexusChat() {
     try {
       await fetchJSON(`/chat/${id}`, { method: "DELETE" });
       if (activeChat?.id === id) {
-        setActiveChat(null);
-        setMessages([]);
+        const remaining = chats.filter((c) => c.id !== id);
+        if (remaining.length > 0) {
+          loadChat(remaining[0].id);
+        } else {
+          setActiveChat(null);
+          setMessages([]);
+        }
       }
+      setConfirmDeleteId(null);
       await loadChats();
     } catch (err) {
       setError("Failed to delete chat: " + err.message);
+    }
+  }
+
+  async function renameChat(id, newTitle) {
+    const trimmed = newTitle.trim();
+    if (!trimmed || trimmed.length > 100) return;
+    // Optimistic update
+    setChats((prev) => prev.map((c) => (c.id === id ? { ...c, title: trimmed } : c)));
+    setRenamingChatId(null);
+    try {
+      await fetchJSON(`/chat/${id}`, { method: "PATCH", body: JSON.stringify({ title: trimmed }) });
+    } catch (err) {
+      setError("Failed to rename chat: " + err.message);
+      await loadChats();
     }
   }
 
@@ -390,6 +447,126 @@ export default function NexusChat() {
     );
   }, [input, streaming, activeChat, selectedModel, selectedProject, enhanceResult, thinkingEnabled, fastEnabled]);
 
+  async function handleRegenerate() {
+    if (streaming || !activeChat?.id) return;
+    const lastAssistantIdx = messages.length - 1;
+    if (lastAssistantIdx < 0 || messages[lastAssistantIdx].role !== "assistant") return;
+
+    setMessages((prev) => prev.slice(0, -1));
+    setStreaming(true);
+    setStreamText("");
+    setThinkingStreamText("");
+    thinkingRef.current = "";
+    setError(null);
+
+    abortRef.current = streamMessage(
+      activeChat.id,
+      null,
+      { model: selectedModel, thinking: thinkingEnabled, fast: fastEnabled, regenerate: true },
+      (text) => {
+        setThinkingStreamText("");
+        setStreamText((prev) => prev + text);
+      },
+      (data) => {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: data.fullText,
+            thinking: thinkingRef.current || null,
+            model_used: data.model,
+            tokens_in: data.usage.input_tokens,
+            tokens_out: data.usage.output_tokens,
+            cost_usd: data.cost,
+            duration_ms: data.durationMs,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+        setStreamText("");
+        setThinkingStreamText("");
+        setStreaming(false);
+        loadChats();
+      },
+      (err) => {
+        setError(err.message);
+        setStreaming(false);
+        setStreamText("");
+        setThinkingStreamText("");
+      },
+      (text) => {
+        if (text !== null) {
+          thinkingRef.current += text;
+          setThinkingStreamText((prev) => prev + text);
+        }
+      }
+    );
+  }
+
+  async function handleEditSubmit(idx) {
+    if (streaming || !activeChat?.id) return;
+    const trimmed = editMessageValue.trim();
+    if (!trimmed) return;
+    const msg = messages[idx];
+    const messagesAfter = messages.length - idx - 1;
+
+    // Truncate messages in state to just up to and including the edited message
+    setMessages((prev) => prev.slice(0, idx).concat([{ ...prev[idx], content: trimmed }]));
+    setEditingMessageIdx(null);
+    setStreaming(true);
+    setStreamText("");
+    setThinkingStreamText("");
+    thinkingRef.current = "";
+    setError(null);
+
+    abortRef.current = streamMessage(
+      activeChat.id,
+      null,
+      {
+        model: selectedModel,
+        thinking: thinkingEnabled,
+        fast: fastEnabled,
+        editMessageId: msg.id,
+        editContent: trimmed,
+      },
+      (text) => {
+        setThinkingStreamText("");
+        setStreamText((prev) => prev + text);
+      },
+      (data) => {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: data.fullText,
+            thinking: thinkingRef.current || null,
+            model_used: data.model,
+            tokens_in: data.usage.input_tokens,
+            tokens_out: data.usage.output_tokens,
+            cost_usd: data.cost,
+            duration_ms: data.durationMs,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+        setStreamText("");
+        setThinkingStreamText("");
+        setStreaming(false);
+        loadChats();
+      },
+      (err) => {
+        setError(err.message);
+        setStreaming(false);
+        setStreamText("");
+        setThinkingStreamText("");
+      },
+      (text) => {
+        if (text !== null) {
+          thinkingRef.current += text;
+          setThinkingStreamText((prev) => prev + text);
+        }
+      }
+    );
+  }
+
   async function handleEnhance() {
     if (!input.trim() || enhancing) return;
     setEnhancing(true);
@@ -473,13 +650,24 @@ export default function NexusChat() {
                 + New Chat
               </button>
 
-              <input
-                type="text"
-                placeholder="Search chats..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                style={styles.searchInput}
-              />
+              <div style={{ position: "relative", margin: "0 16px 8px" }}>
+                <input
+                  type="text"
+                  placeholder="Search chats..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  style={styles.searchInput}
+                />
+                {searchQuery && (
+                  <button
+                    onClick={() => setSearchQuery("")}
+                    style={styles.searchClearBtn}
+                    title="Clear search"
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
 
               {selectedProject && (
                 <div style={styles.filterBar}>
@@ -499,23 +687,93 @@ export default function NexusChat() {
                 {filteredChats.map((chat) => (
                   <div
                     key={chat.id}
-                    onClick={() => loadChat(chat.id)}
+                    onClick={() => { if (renamingChatId !== chat.id) loadChat(chat.id); }}
+                    onMouseEnter={() => setHoveredChatId(chat.id)}
+                    onMouseLeave={() => { setHoveredChatId(null); if (chatMenuId === chat.id) setChatMenuId(null); }}
                     style={{
                       ...styles.chatItem,
                       ...(activeChat?.id === chat.id ? styles.chatItemActive : {}),
+                      position: "relative",
                     }}
                   >
-                    <div style={styles.chatTitle}>{chat.title}</div>
+                    {renamingChatId === chat.id ? (
+                      <input
+                        type="text"
+                        value={renameValue}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") renameChat(chat.id, renameValue);
+                          if (e.key === "Escape") setRenamingChatId(null);
+                        }}
+                        onBlur={() => renameChat(chat.id, renameValue)}
+                        autoFocus
+                        maxLength={100}
+                        style={{ ...styles.searchInput, margin: 0, width: "100%", fontSize: 13, padding: "4px 8px" }}
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    ) : (
+                      <div
+                        style={styles.chatTitle}
+                        onDoubleClick={(e) => {
+                          e.stopPropagation();
+                          setRenamingChatId(chat.id);
+                          setRenameValue(chat.title);
+                        }}
+                      >
+                        {chat.title}
+                      </div>
+                    )}
                     <div style={styles.chatMeta}>
                       {chat.message_count || 0} messages
-                      <button
-                        onClick={(e) => { e.stopPropagation(); deleteChat(chat.id); }}
-                        style={styles.deleteBtn}
-                        title="Delete chat"
-                      >
-                        x
-                      </button>
+                      {hoveredChatId === chat.id && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setChatMenuId(chatMenuId === chat.id ? null : chat.id); }}
+                          style={styles.overflowBtn}
+                          title="Chat options"
+                        >
+                          {"\u22EF"}
+                        </button>
+                      )}
                     </div>
+                    {chatMenuId === chat.id && (
+                      <div style={styles.chatMenu}>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setChatMenuId(null);
+                            setRenamingChatId(chat.id);
+                            setRenameValue(chat.title);
+                          }}
+                          style={styles.chatMenuItem}
+                        >
+                          Rename
+                        </button>
+                        {confirmDeleteId === chat.id ? (
+                          <div style={{ display: "flex", alignItems: "center", padding: "6px 12px", gap: 6, fontSize: 12 }}>
+                            <span style={{ color: "var(--danger)" }}>Delete?</span>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); setChatMenuId(null); deleteChat(chat.id); }}
+                              style={{ ...styles.chatMenuItem, padding: "4px 8px", color: "var(--danger)", fontWeight: 600 }}
+                            >
+                              Yes
+                            </button>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); setConfirmDeleteId(null); }}
+                              style={{ ...styles.chatMenuItem, padding: "4px 8px" }}
+                            >
+                              No
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setConfirmDeleteId(chat.id); }}
+                            style={{ ...styles.chatMenuItem, color: "var(--danger)" }}
+                          >
+                            Delete
+                          </button>
+                        )}
+                      </div>
+                    )}
                     {chat.project_id && (
                       <div style={styles.chatProjectBadge}>{projectName(chat.project_id) || "project"}</div>
                     )}
@@ -608,7 +866,7 @@ export default function NexusChat() {
                               style={styles.editBtn}
                               title="Edit project"
                             >
-                              Edit
+                              {"\u270E"}
                             </button>
                             {Number(p.chat_count) || 0} chats
                           </span>
@@ -722,7 +980,7 @@ export default function NexusChat() {
         </div>
 
         {/* Messages area */}
-        <div style={styles.messagesArea}>
+        <div style={{ ...styles.messagesArea, position: "relative" }} ref={messagesAreaRef}>
           {messages.length === 0 && !streaming && (
             <div style={styles.welcome}>
               <h2 style={styles.welcomeTitle}>Nexus</h2>
@@ -736,7 +994,12 @@ export default function NexusChat() {
           )}
 
           {messages.map((msg, i) => (
-            <div key={i} style={{ ...styles.message, ...(msg.role === "user" ? styles.userMessage : styles.assistantMessage) }}>
+            <div
+              key={i}
+              style={{ ...styles.message, ...(msg.role === "user" ? styles.userMessage : styles.assistantMessage), position: "relative" }}
+              onMouseEnter={() => setHoveredMessageIdx(i)}
+              onMouseLeave={() => setHoveredMessageIdx(null)}
+            >
               <div style={styles.messageRole}>
                 {msg.role === "user" ? "You" : "Claude"}
                 {msg.enhanced && <span style={styles.enhancedBadge}>enhanced</span>}
@@ -751,14 +1014,66 @@ export default function NexusChat() {
                   </div>
                 </details>
               )}
-              <div
-                style={styles.messageContent}
-                dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }}
-              />
+              {editingMessageIdx === i ? (
+                <div>
+                  <textarea
+                    value={editMessageValue}
+                    onChange={(e) => setEditMessageValue(e.target.value)}
+                    style={{ ...styles.textarea, width: "100%", minHeight: 80 }}
+                    autoFocus
+                  />
+                  <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                    <button onClick={() => handleEditSubmit(i)} style={{ ...styles.sendBtn, fontSize: 12, padding: "6px 12px" }}>
+                      Save & Submit
+                    </button>
+                    <button onClick={() => setEditingMessageIdx(null)} style={{ ...styles.secondaryBtn, fontSize: 12, padding: "6px 12px" }}>
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div
+                  style={styles.messageContent}
+                  onClick={handleCodeCopyClick}
+                  dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }}
+                />
+              )}
               {msg.role === "assistant" && msg.tokens_in && (
                 <div style={styles.messageMeta}>
                   {msg.model_used} | {msg.tokens_in?.toLocaleString()} in / {msg.tokens_out?.toLocaleString()} out | {formatCost(msg.cost_usd)} | {formatTime(msg.duration_ms)}
                 </div>
+              )}
+              {hoveredMessageIdx === i && editingMessageIdx !== i && (
+                <div style={styles.messageActions}>
+                  {msg.role === "user" && (
+                    <button
+                      onClick={() => { setEditingMessageIdx(i); setEditMessageValue(msg.content); }}
+                      style={styles.actionBtn}
+                      title="Edit message"
+                    >
+                      {"\u270E"}
+                    </button>
+                  )}
+                  <button
+                    onClick={async () => {
+                      await navigator.clipboard.writeText(msg.content);
+                      setCopiedMessageIdx(i);
+                      setTimeout(() => setCopiedMessageIdx(null), 2000);
+                    }}
+                    style={styles.actionBtn}
+                    title="Copy message"
+                  >
+                    {copiedMessageIdx === i ? "\u2713" : "\u2398"}
+                  </button>
+                </div>
+              )}
+              {msg.role === "assistant" && i === messages.length - 1 && !streaming && (
+                <button
+                  onClick={handleRegenerate}
+                  style={styles.regenerateBtn}
+                >
+                  {"\uD83D\uDD04"} Regenerate
+                </button>
               )}
             </div>
           ))}
@@ -768,6 +1083,7 @@ export default function NexusChat() {
               <div style={styles.messageRole}>Claude</div>
               <div
                 style={styles.messageContent}
+                onClick={handleCodeCopyClick}
                 dangerouslySetInnerHTML={{ __html: renderMarkdown(streamText) }}
               />
               <div style={styles.streamingDot} />
@@ -798,6 +1114,19 @@ export default function NexusChat() {
 
           <div ref={endRef} />
         </div>
+
+        {!isAtBottom && (
+          <button
+            onClick={() => {
+              endRef.current?.scrollIntoView({ behavior: "smooth" });
+              setIsAtBottom(true);
+            }}
+            style={styles.scrollToBottom}
+            aria-label="Scroll to bottom"
+          >
+            {"\u2193"}
+          </button>
+        )}
 
         {/* Error banner */}
         {error && (
@@ -1026,14 +1355,29 @@ const styles = {
     fontSize: 14,
   },
   searchInput: {
-    margin: "0 16px 8px",
-    padding: "8px 12px",
+    width: "100%",
+    boxSizing: "border-box",
+    padding: "8px 28px 8px 12px",
     background: "var(--bg-tertiary)",
     border: "1px solid var(--border)",
     borderRadius: 6,
     color: "var(--text-primary)",
     fontSize: 13,
     outline: "none",
+    margin: 0,
+  },
+  searchClearBtn: {
+    position: "absolute",
+    right: 6,
+    top: "50%",
+    transform: "translateY(-50%)",
+    background: "none",
+    border: "none",
+    color: "var(--text-secondary)",
+    cursor: "pointer",
+    fontSize: 16,
+    padding: "0 4px",
+    lineHeight: 1,
   },
   chatList: {
     flex: 1,
@@ -1074,6 +1418,38 @@ const styles = {
     fontSize: 12,
     padding: "0 4px",
     opacity: 0.5,
+  },
+  overflowBtn: {
+    background: "none",
+    border: "none",
+    color: "var(--text-muted)",
+    cursor: "pointer",
+    fontSize: 16,
+    padding: "0 4px",
+    lineHeight: 1,
+  },
+  chatMenu: {
+    position: "absolute",
+    top: "100%",
+    right: 4,
+    background: "var(--bg-secondary)",
+    border: "1px solid var(--border)",
+    borderRadius: 6,
+    boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+    zIndex: 20,
+    minWidth: 100,
+    overflow: "hidden",
+  },
+  chatMenuItem: {
+    display: "block",
+    width: "100%",
+    padding: "8px 12px",
+    background: "none",
+    border: "none",
+    color: "var(--text-primary)",
+    cursor: "pointer",
+    fontSize: 12,
+    textAlign: "left",
   },
   emptyState: {
     color: "var(--text-muted)",
@@ -1234,6 +1610,7 @@ const styles = {
     display: "flex",
     flexDirection: "column",
     overflow: "hidden",
+    position: "relative",
   },
   topBar: {
     display: "flex",
@@ -1407,6 +1784,55 @@ const styles = {
     background: "var(--accent)",
     marginTop: 8,
     animation: "pulse 1s ease-in-out infinite",
+  },
+  scrollToBottom: {
+    position: "absolute",
+    bottom: 80,
+    left: "50%",
+    transform: "translateX(-50%)",
+    background: "var(--bg-tertiary)",
+    border: "1px solid var(--border)",
+    borderRadius: "50%",
+    width: 36,
+    height: 36,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    cursor: "pointer",
+    fontSize: 18,
+    color: "var(--text-primary)",
+    boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+    zIndex: 10,
+    transition: "all 0.15s",
+  },
+  regenerateBtn: {
+    marginTop: 8,
+    padding: "4px 12px",
+    background: "none",
+    border: "1px solid var(--border)",
+    borderRadius: 5,
+    color: "var(--text-muted)",
+    cursor: "pointer",
+    fontSize: 12,
+    transition: "all 0.15s",
+  },
+  messageActions: {
+    position: "absolute",
+    top: 8,
+    right: 8,
+    display: "flex",
+    gap: 4,
+  },
+  actionBtn: {
+    background: "var(--bg-tertiary)",
+    border: "1px solid var(--border)",
+    borderRadius: 4,
+    color: "var(--text-muted)",
+    cursor: "pointer",
+    fontSize: 13,
+    padding: "4px 8px",
+    lineHeight: 1,
+    transition: "all 0.15s",
   },
   thinkingText: {
     color: "var(--text-muted)",
@@ -1600,12 +2026,12 @@ const styles = {
   editBtn: {
     background: "none",
     border: "none",
-    color: "var(--accent)",
+    color: "var(--text-muted)",
     cursor: "pointer",
-    fontSize: 11,
-    padding: "0 4px",
-    textDecoration: "underline",
-    opacity: 0.7,
+    fontSize: 13,
+    padding: "2px 4px",
+    opacity: 0.6,
+    transition: "opacity 0.15s",
   },
   projectMetaRight: {
     display: "flex",

@@ -5,9 +5,9 @@ import { getDefaultModel, getEnhancementModel } from "@/lib/models";
 export async function POST(request, { params }) {
   const { id } = await params;
   const body = await request.json();
-  const { content, model, enhanced, thinking, fast } = body;
+  const { content, model, enhanced, thinking, fast, regenerate, editMessageId, editContent } = body;
 
-  if (!content) {
+  if (!content && !regenerate) {
     return new Response(JSON.stringify({ error: "content is required" }), {
       status: 400,
       headers: { "Content-Type": "application/json" },
@@ -25,12 +25,27 @@ export async function POST(request, { params }) {
   const chat = chats[0];
   const modelId = model || chat.model_id || (await getDefaultModel());
 
-  // Save user message
-  await query(
-    `INSERT INTO messages (chat_id, role, content, enhanced)
-     VALUES ($1, 'user', $2, $3)`,
-    [id, content, enhanced || false]
-  );
+  if (editMessageId) {
+    // Edit & resubmit: update message content, delete all messages after it
+    await query("UPDATE messages SET content = $1 WHERE id = $2 AND chat_id = $3", [editContent, editMessageId, id]);
+    await query(
+      `DELETE FROM messages WHERE chat_id = $1 AND created_at > (SELECT created_at FROM messages WHERE id = $2)`,
+      [id, editMessageId]
+    );
+  } else if (regenerate) {
+    // Regenerate: delete the last assistant message
+    await query(
+      `DELETE FROM messages WHERE id = (SELECT id FROM messages WHERE chat_id = $1 AND role = 'assistant' ORDER BY created_at DESC LIMIT 1)`,
+      [id]
+    );
+  } else {
+    // Normal: save user message
+    await query(
+      `INSERT INTO messages (chat_id, role, content, enhanced)
+       VALUES ($1, 'user', $2, $3)`,
+      [id, content, enhanced || false]
+    );
+  }
 
   // Load conversation history
   const history = await query(
@@ -62,7 +77,8 @@ export async function POST(request, { params }) {
   // Fire-and-forget: save assistant message and auto-title after stream completes
   const [readable, monitor] = stream.tee();
 
-  saveAfterStream(monitor, id, chat, modelId, content);
+  const lastUserContent = content || messages.filter((m) => m.role === "user").pop()?.content || "";
+  saveAfterStream(monitor, id, chat, modelId, lastUserContent);
 
   return new Response(readable, {
     headers: {
